@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" type="text/css" href="css/bootstrap.css" />
+    <link rel="stylesheet" type="text/css" href="css/default.css" />
+    <link rel="stylesheet" type="text/css" href="css/tui-color-picker.css" />
+    <script src="purify.min.js"></script>
+    <script src="jquery-3.js"></script>
+    <script src="bootstrap.js"></script>
+    <script src="tui-code-snippet.js"></script>
+    <script src="tui-time-picker.js"></script>
+    <script src="tui-date-picker.js"></script>
+    <script src="moment.js"></script>
+    <script src="moment-timezone-with-data-10-year-range.js"></script>
+    <script src="ical.min.js"></script>
+    <script src="ical-expander.js"></script>
+    <script src="tui-calendar.js"></script>
+    <script src="tui-color-picker.js"></script>
+    <script src="en-gb.js"></script>
+  </head>
+  <body>
+    <div id="ui" class="calendar-hidden">
+        <div id="calendarMessageModal" class="calendar-message-modal">
+            <div class="calendar-message-modal-content">
+                <span class="calendar-message-modal-close">&times;</span>
+                <div class="twenty-top">
+                    <p id="calendar-message-text"></p>
+                </div>
+                <div>
+                    <button id="calendar-ok-button" class="ten-top">OK</button>
+                </div>
+            </div>
+        </div>
+        <div id="calendarModal" class="calendar-modal">
+            <div class="calendar-modal-content">
+	      <span class="calendar-modal-close">&times;</span>
+                <div id="color-picker-container">
+                    <div id="color-picker" class="calendar-hidden"></div>
+                </div>
+                <div id="calendars" class="twenty-top">
+                    <ul id="calendar-list">
+                    </ul>
+                </div>
+                <div id="add-calendar-container">
+                    <button id="add-calendar-button" class="ten-top">Add Calendar</button>
+                </div>
+            </div>
+        </div>
+      <div id="lnb" class="calendar-hidden">
+	<div id="lnb-calendars" class="lnb-calendars">
+	  <div>
+          <div class="lnb-calendars-item">
+              <button id="show-configuration-button" class="button-action">
+                <label>
+                  <strong id="calendar-settings-label">Calendar Settings</strong>
+                </label>
+              </button>
+          </div>
+            <div class="lnb-calendars-item">
+              <label>
+		<input class="tui-full-calendar-checkbox-square" type="checkbox" value="all" checked>
+		<span></span>
+		<strong id="calendar-view-all-label">View all</strong>
+              </label>
+            </div>
+	  </div>
+	  <div id="calendarList" class="lnb-calendars-d1">
+	  </div>
+	</div>
+      </div>
+      <div id="right">
+	
+	<div id="menu">
+	  <span>
+	    <button id="calendar-settings" class="btn btn-default btn-sm"><img src="images/cog.png"/></button>
+	  </span>
+	  <span class="dropdown">
+            <button id="dropdownMenu-calendarType" class="btn btn-default btn-sm dropdown-toggle" type="button" data-toggle="dropdown"
+                    aria-haspopup="true" aria-expanded="true">
+              <!-- i id="calendarTypeIcon" class="calendar-icon ic_view_month" style="margin-right: 4px;"></i -->
+              <span id="calendarTypeName">Dropdown</span>&nbsp;
+              <i class="calendar-icon tui-full-calendar-dropdown-arrow"></i>
+            </button>
+            <ul class="dropdown-menu" role="menu" aria-labelledby="dropdownMenu-calendarType">
+              <li role="presentation">
+		<a id="calendar-label-daily" class="dropdown-menu-title" role="menuitem" data-action="toggle-daily">
+		  <i class="calendar-icon ic_view_day"></i>
+		</a>
+              </li>
+              <li role="presentation">
+		<a id="calendar-label-weekly" class="dropdown-menu-title" role="menuitem" data-action="toggle-weekly">
+		  <i class="calendar-icon ic_view_week"></i>
+		</a>
+              </li>
+              <li role="presentation">
+		<a id="calendar-label-month" class="dropdown-menu-title" role="menuitem" data-action="toggle-monthly">
+		  <i class="calendar-icon ic_view_month"></i>
+		</a>
+              </li>
+            </ul>
+	  </span>
+	  <span id="menu-navi">
+            <button id="calendar-label-today" type="button" class="btn btn-default btn-sm move-today" data-action="move-today">Today</button>
+            <button type="button" class="btn btn-default btn-sm move-day" data-action="move-prev">
+              <i class="calendar-icon ic-arrow-line-left" data-action="move-prev"></i>
+            </button>
+            <button type="button" class="btn btn-default btn-sm move-day" data-action="move-next">
+              <i class="calendar-icon ic-arrow-line-right" data-action="move-next"></i>
+            </button>
+	  </span>
+	  <span id="renderRange" class="render-range"></span>
+	</div>
+	<div id="calendar" class="all-calendar"></div>
+      </div>
+    </div>
+    <script src="init.js"></script>
+  </body>
+</html>
+
