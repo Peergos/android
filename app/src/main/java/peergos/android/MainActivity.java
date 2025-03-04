@@ -2,13 +2,23 @@ package peergos.android;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.DownloadManager;
 import android.app.ProgressDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.DownloadListener;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -26,6 +36,7 @@ import org.peergos.util.Futures;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -34,13 +45,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ForkJoinPool;
 import java.util.function.Supplier;
 
 import peergos.server.Builder;
 import peergos.server.DirectOnlyStorage;
 import peergos.server.JavaCrypto;
 import peergos.server.JdbcPkiCache;
+import peergos.server.Main;
 import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
 import peergos.server.crypto.hash.ScryptJava;
@@ -73,9 +84,16 @@ import peergos.shared.user.Account;
 import peergos.shared.user.HttpAccount;
 import peergos.shared.user.HttpPoster;
 import peergos.shared.user.ServerMessager;
+import peergos.shared.user.fs.AbsoluteCapability;
+import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.util.Constants;
 
 public class MainActivity extends AppCompatActivity {
     WebView webView;
+    Crypto crypto;
+    NetworkAccess network;
+
+    ServiceWorkerClient serviceWorker;
     ProgressDialog progressDialog;
 
     // for handling file upload, set a static value, any number you like
@@ -87,15 +105,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
-
-        new Thread(() -> {
-            startServer(7777);
-            System.out.println("Loading Peergos UI");
-            MainActivity.this.runOnUiThread(() -> {
-                webView.loadUrl("http://localhost:7777");
-                progressDialog.hide();
-            });
-        }).start();
+        crypto = Main.initCrypto();
 
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
@@ -116,22 +126,84 @@ public class MainActivity extends AppCompatActivity {
         webView.canGoBackOrForward(99);
 
         // handling web page browsing mechanism
-//        webView.setWebViewClient(new myWebViewClient());
+        webView.setWebViewClient(new NavigationHandler());
 
         // handling file upload mechanism
-        webView.setWebChromeClient(new myWebChromeClient());
+        webView.setWebChromeClient(new UploadHandler());
+
+        ServiceWorkerController swController = ServiceWorkerController.getInstance();
+        serviceWorker = new ServiceWorkerClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                System.out.println("in service worker. isMainFrame:" + request.isForMainFrame() + ": " + request.getUrl());
+
+                return super.shouldInterceptRequest(request);
+            }
+        };
+        swController.setServiceWorkerClient(serviceWorker);
 
         // some other settings
         WebSettings settings = webView.getSettings();
+        settings.setUserAgentString("Peergos-1.0.0-android");
         settings.setJavaScriptEnabled(true);
         settings.setAllowFileAccess(true);
-//        settings.setAllowFileAccessFromFileURLs(true);
-        settings.setUserAgentString("Peergos-1.0.0-android");
+        settings.setDomStorageEnabled(true);
+        settings.setAllowContentAccess(true);
+        settings.setSupportMultipleWindows(true);
 
         webView.setDownloadListener(downloadListener);
+        new Thread(() -> {
+            startServer(7777);
+            network = buildLocalhostNetwork(7777);
+            MainActivity.this.runOnUiThread(() -> {
+                webView.loadUrl("http://localhost:7777");
+                progressDialog.hide();
+            });
+        }).start();
     }
 
-    public static class myWebChromeClient extends WebChromeClient {
+    class NavigationHandler extends android.webkit.WebViewClient {
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            System.out.println("WebViewClient url loaded " + request.getUrl().toString());
+            view.loadUrl(request.getUrl().toString());
+            return true;
+        }
+
+//        @Nullable
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view,
+                                                          WebResourceRequest request) {
+            System.out.println("in webview client. isMainFrame:"+request.isForMainFrame() +": " + request.getUrl());
+            return serviceWorker.shouldInterceptRequest(request);
+//            return null;
+//            return super.shouldInterceptRequest(view, request);
+        }
+
+        @Override
+        public void onPageStarted(WebView view, String url, Bitmap favicon) {
+//            super.onPageStarted(view, url, favicon);
+            //showing the progress bar once the page has started loading
+            progressDialog.show();
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+//            super.onPageFinished(view, url);
+            // hide the progress bar once the page has loaded
+            progressDialog.dismiss();
+        }
+
+        @Override
+        public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+            super.onReceivedError(view, request, error);
+            webView.loadUrl("file:///android_asset/no_internet.html");
+            progressDialog.dismiss();
+            Toast.makeText(getApplicationContext(),"Internet issue", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    public static class UploadHandler extends WebChromeClient {
         @SuppressLint("NewApi")
         @Override
         public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> valueCallback, FileChooserParams fileChooserParams) {
@@ -145,9 +217,9 @@ public class MainActivity extends AppCompatActivity {
             // set multiple file types
             String[] mimeTypes = {"image/*", "application/pdf"};
             intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
-            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
 
-            Intent chooserIntent = Intent.createChooser(intent, "Choose file");
+            Intent chooserIntent = Intent.createChooser(intent, "Choose file(s)");
             ((Activity) webView.getContext()).startActivityForResult(chooserIntent, file_chooser_activity_code);
 
             // Save the callback for handling the selected file
@@ -188,18 +260,64 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    DownloadListener downloadListener = new DownloadListener() {
+    BroadcastReceiver onComplete = new BroadcastReceiver() {
         @Override
-        public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-
-            progressDialog.dismiss();
-            Intent i = new Intent(Intent.ACTION_VIEW);
-
-            // example of URL = https://www.example.com/invoice.pdf
-            i.setData(Uri.parse(url));
-            startActivity(i);
+        public void onReceive(Context context, Intent intent) {
+            Toast.makeText(getApplicationContext(),"Downloading Complete",Toast.LENGTH_SHORT).show();
         }
     };
+
+    DownloadListener downloadListener = new DownloadListener() {
+        @Override
+        public void onDownloadStart(String url, String userAgent, String contentDisposition, String wrongMimetype, long contentLength) {
+            new Thread(() -> {
+                System.out.println("onDownloadStart");
+                String rest = url.substring(url.indexOf(Constants.ANDROID_FILE_REFLECTOR) + Constants.ANDROID_FILE_REFLECTOR.length() + "file/".length());
+                AbsoluteCapability cap = AbsoluteCapability.fromLink(rest);
+                FileWrapper file = network.getFile(cap, "").join().get();
+                String filename = file.getName();
+                DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+                request.setTitle(filename);
+                request.setDescription("Downloading file...");
+                String mimeType = file.getFileProperties().mimeType;
+                request.setMimeType(mimeType);
+                System.out.println("Download manager downloading " + contentLength + " bytes of " + mimeType);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE);
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                dm.enqueue(request);
+
+                MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
+                registerReceiver(onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), RECEIVER_NOT_EXPORTED);
+            }).start();
+//            progressDialog.dismiss();
+//            Intent i = new Intent(Intent.ACTION_VIEW);
+//
+//            System.out.println("On Download: " + url + " length: " + contentLength);
+//            i.setData(Uri.parse(url));
+//            startActivity(i);
+        }
+    };
+
+    @Override
+    public void onBackPressed() {
+        if(webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    public NetworkAccess buildLocalhostNetwork(int port) {
+        try {
+            HttpPoster poster = new AndroidPoster(new URL("http://localhost:" + port), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
+            ScryptJava hasher = new ScryptJava();
+            ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
+            CoreNode core = NetworkAccess.buildDirectCorenode(poster);
+            return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, hasher, Collections.emptyList(), false);
+        } catch (MalformedURLException e) {
+            throw new RuntimeException(e);
+        }
+    }
     
     public boolean startServer(int port) {
         System.out.println("SQLITE library present: " + (null != peergos.server.Main.class.getResourceAsStream("/org/sqlite/native/Linux-Android/aarch64/libsqlitejdbc.so")));
