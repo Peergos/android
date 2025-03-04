@@ -89,9 +89,13 @@ import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.util.Constants;
 
 public class MainActivity extends AppCompatActivity {
+
+    public static final int PORT = 7777;
     WebView webView;
     Crypto crypto;
-    NetworkAccess network;
+    HttpPoster poster;
+    ContentAddressedStorage localDht;
+    CoreNode core;
 
     ServiceWorkerClient serviceWorker;
     ProgressDialog progressDialog;
@@ -106,6 +110,13 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
         crypto = Main.initCrypto();
+        try {
+            poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
+        } catch (MalformedURLException e) {
+            throw new RuntimeException(e);
+        }
+        localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
+        core = NetworkAccess.buildDirectCorenode(poster);
 
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
@@ -153,10 +164,9 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
-            startServer(7777);
-            network = buildLocalhostNetwork(7777);
+            startServer(PORT);
             MainActivity.this.runOnUiThread(() -> {
-                webView.loadUrl("http://localhost:7777");
+                webView.loadUrl("http://localhost:" + PORT);
                 progressDialog.hide();
             });
         }).start();
@@ -274,6 +284,7 @@ public class MainActivity extends AppCompatActivity {
                 System.out.println("onDownloadStart");
                 String rest = url.substring(url.indexOf(Constants.ANDROID_FILE_REFLECTOR) + Constants.ANDROID_FILE_REFLECTOR.length() + "file/".length());
                 AbsoluteCapability cap = AbsoluteCapability.fromLink(rest);
+                NetworkAccess network = buildLocalhostNetwork();
                 FileWrapper file = network.getFile(cap, "").join().get();
                 String filename = file.getName();
                 DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
@@ -307,16 +318,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public NetworkAccess buildLocalhostNetwork(int port) {
-        try {
-            HttpPoster poster = new AndroidPoster(new URL("http://localhost:" + port), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
-            ScryptJava hasher = new ScryptJava();
-            ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
-            CoreNode core = NetworkAccess.buildDirectCorenode(poster);
-            return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, hasher, Collections.emptyList(), false);
-        } catch (MalformedURLException e) {
-            throw new RuntimeException(e);
-        }
+    public NetworkAccess buildLocalhostNetwork() {
+        return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false);
     }
     
     public boolean startServer(int port) {
@@ -336,7 +339,6 @@ public class MainActivity extends AppCompatActivity {
                 "port", port + ""
         });
         try {
-            Crypto crypto = JavaCrypto.init();
             URL target = new URL(a.getArg("peergos-url", "https://peergos.net"));
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ScryptJava hasher = new ScryptJava();
