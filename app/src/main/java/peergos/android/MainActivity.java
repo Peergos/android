@@ -11,6 +11,7 @@ import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.webkit.DownloadListener;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
@@ -294,18 +295,14 @@ public class MainActivity extends AppCompatActivity {
                 request.setMimeType(mimeType);
                 System.out.println("Download manager downloading " + contentLength + " bytes of " + mimeType);
                 request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE);
+                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
                 DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                 dm.enqueue(request);
 
                 MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
                 registerReceiver(onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), RECEIVER_NOT_EXPORTED);
             }).start();
-//            progressDialog.dismiss();
-//            Intent i = new Intent(Intent.ACTION_VIEW);
-//
-//            System.out.println("On Download: " + url + " length: " + contentLength);
-//            i.setData(Uri.parse(url));
-//            startActivity(i);
         }
     };
 
