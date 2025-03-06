@@ -26,6 +26,7 @@ import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -53,7 +54,6 @@ import java.util.stream.Collectors;
 
 import peergos.server.Builder;
 import peergos.server.DirectOnlyStorage;
-import peergos.server.JavaCrypto;
 import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
 import peergos.server.UserService;
@@ -308,7 +308,7 @@ public class MainActivity extends AppCompatActivity {
                     dm.enqueue(request);
 
                     MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                    registerReceiver(onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), RECEIVER_NOT_EXPORTED);
+                    ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
                 } else if (action.equals("zip")) {
                     List<AbsoluteCapability> caps = Arrays.stream(rest.split("\\$"))
                             .map(AbsoluteCapability::fromLink)
@@ -329,7 +329,7 @@ public class MainActivity extends AppCompatActivity {
                     dm.enqueue(request);
 
                     MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                    registerReceiver(onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), RECEIVER_NOT_EXPORTED);
+                    ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
                 }
             }).start();
         }
@@ -349,7 +349,6 @@ public class MainActivity extends AppCompatActivity {
     }
     
     public boolean startServer(int port) {
-        System.out.println("SQLITE library present: " + (null != peergos.server.Main.class.getResourceAsStream("/org/sqlite/native/Linux-Android/aarch64/libsqlitejdbc.so")));
         File privateStorage = this.getFilesDir();
         Path peergosDir = Paths.get(privateStorage.getAbsolutePath());
         System.out.println("Peergos using private storage dir: " + peergosDir);
