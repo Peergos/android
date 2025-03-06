@@ -229,9 +229,6 @@ public class MainActivity extends AppCompatActivity {
             // set single file type, e.g. "image/*" for images
             intent.setType("*/*");
 
-            // set multiple file types
-            String[] mimeTypes = {"image/*", "application/pdf"};
-            intent.putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes);
             intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
 
             Intent chooserIntent = Intent.createChooser(intent, "Choose file(s)");
@@ -239,7 +236,6 @@ public class MainActivity extends AppCompatActivity {
 
             // Save the callback for handling the selected file
             mUploadMessageArr = valueCallback;
-
             return true;
         }
     }
