@@ -181,7 +181,11 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             System.out.println("WebViewClient url loaded " + request.getUrl().toString());
-            view.loadUrl(request.getUrl().toString());
+            String encodedPath = request.getUrl().getEncodedPath();
+            boolean isDownload = encodedPath.startsWith("/" + Constants.ANDROID_FILE_REFLECTOR);
+            if (! isDownload)
+                return false;
+            downloadFile(request.getUrl());
             return true;
         }
 
@@ -216,6 +220,56 @@ public class MainActivity extends AppCompatActivity {
             progressDialog.dismiss();
             Toast.makeText(getApplicationContext(),"Internet issue", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void downloadFile(Uri uri) {
+        new Thread(() -> {
+            System.out.println("onDownloadStart");
+            String path = uri.getEncodedPath();
+            String withAction = path.substring(path.indexOf(Constants.ANDROID_FILE_REFLECTOR) + Constants.ANDROID_FILE_REFLECTOR.length());
+            String action = withAction.split("/")[0];
+            String rest = withAction.substring(action.length() + 1);
+            if (action.equals("file")) {
+                AbsoluteCapability cap = AbsoluteCapability.fromLink(rest);
+                NetworkAccess network = buildLocalhostNetwork();
+                FileWrapper file = network.getFile(cap, "").join().get();
+                String filename = file.getName();
+                DownloadManager.Request request = new DownloadManager.Request(uri);
+                request.setTitle(filename);
+                request.setDescription("Downloading file...");
+                String mimeType = file.getFileProperties().mimeType;
+                request.setMimeType(mimeType);
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                dm.enqueue(request);
+
+                MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
+                ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
+            } else if (action.equals("zip")) {
+                List<AbsoluteCapability> caps = Arrays.stream(rest.split("\\$"))
+                        .map(AbsoluteCapability::fromLink)
+                        .collect(Collectors.toList());
+                NetworkAccess network = buildLocalhostNetwork();
+                Set<FileWrapper> files = network.retrieveAll(caps.stream().map(cap -> new EntryPoint(cap, "")).collect(Collectors.toList())).join();
+                String filename = files.size() == 1 ? files.stream().findFirst().get().getName() + ".zip" : "archive-" + LocalDateTime.now() + ".zip";
+                DownloadManager.Request request = new DownloadManager.Request(uri);
+                request.setTitle(filename);
+                request.setDescription("Downloading file...");
+                String mimeType = "application/zip";
+                request.setMimeType(mimeType);
+                System.out.println("Download manager downloading zip..");
+                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
+                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                dm.enqueue(request);
+
+                MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
+                ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
+            }
+        }).start();
     }
 
     public static class UploadHandler extends WebChromeClient {
@@ -278,58 +332,7 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    DownloadListener downloadListener = new DownloadListener() {
-        @Override
-        public void onDownloadStart(String url, String userAgent, String contentDisposition, String wrongMimetype, long contentLength) {
-            new Thread(() -> {
-                System.out.println("onDownloadStart");
-                String withAction = url.substring(url.indexOf(Constants.ANDROID_FILE_REFLECTOR) + Constants.ANDROID_FILE_REFLECTOR.length());
-                String action = withAction.split("/")[0];
-                String rest = withAction.substring(action.length() + 1);
-                if (action.equals("file")) {
-                    AbsoluteCapability cap = AbsoluteCapability.fromLink(rest);
-                    NetworkAccess network = buildLocalhostNetwork();
-                    FileWrapper file = network.getFile(cap, "").join().get();
-                    String filename = file.getName();
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                    request.setTitle(filename);
-                    request.setDescription("Downloading file...");
-                    String mimeType = file.getFileProperties().mimeType;
-                    request.setMimeType(mimeType);
-                    System.out.println("Download manager downloading " + contentLength + " bytes of " + mimeType);
-                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
-                    DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                    dm.enqueue(request);
-
-                    MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                    ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
-                } else if (action.equals("zip")) {
-                    List<AbsoluteCapability> caps = Arrays.stream(rest.split("\\$"))
-                            .map(AbsoluteCapability::fromLink)
-                            .collect(Collectors.toList());
-                    NetworkAccess network = buildLocalhostNetwork();
-                    Set<FileWrapper> files = network.retrieveAll(caps.stream().map(cap -> new EntryPoint(cap, "")).collect(Collectors.toList())).join();
-                    String filename = files.size() == 1 ? files.stream().findFirst().get().getName() + ".zip" : "archive-" + LocalDateTime.now() + ".zip";
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                    request.setTitle(filename);
-                    request.setDescription("Downloading file...");
-                    String mimeType = "application/zip";
-                    request.setMimeType(mimeType);
-                    System.out.println("Download manager downloading zip..");
-                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
-                    DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                    dm.enqueue(request);
-
-                    MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                    ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
-                }
-            }).start();
-        }
-    };
+    DownloadListener downloadListener = (url, userAgent, contentDisposition, wrongMimetype, contentLength) -> downloadFile(Uri.parse(url));
 
     @Override
     public void onBackPressed() {
