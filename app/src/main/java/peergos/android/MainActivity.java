@@ -22,6 +22,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -166,6 +168,7 @@ public class MainActivity extends AppCompatActivity {
         settings.setDomStorageEnabled(true);
         settings.setAllowContentAccess(true);
         settings.setSupportMultipleWindows(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
 
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
@@ -177,7 +180,7 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    class NavigationHandler extends android.webkit.WebViewClient {
+    class NavigationHandler extends WebViewClient {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             System.out.println("WebViewClient url loaded " + request.getUrl().toString());
@@ -272,7 +275,7 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    public static class UploadHandler extends WebChromeClient {
+    public class UploadHandler extends WebChromeClient {
         @SuppressLint("NewApi")
         @Override
         public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> valueCallback, FileChooserParams fileChooserParams) {
@@ -291,6 +294,72 @@ public class MainActivity extends AppCompatActivity {
             // Save the callback for handling the selected file
             mUploadMessageArr = valueCallback;
             return true;
+        }
+
+        @Override
+        public boolean onCreateWindow(WebView view, boolean dialog, boolean userGesture, android.os.Message resultMsg) {
+            if (! userGesture)
+                return false;
+            WebView newWebView = new WebView(MainActivity.this);
+            view.addView(newWebView);
+            AbsoluteLayout.LayoutParams params = new AbsoluteLayout.LayoutParams(view.getWidth(), view.getHeight(), 0, 0);
+            newWebView.setLayoutParams(params);
+
+            WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+            transport.setWebView(newWebView);
+            resultMsg.sendToTarget();
+
+            WebSettings settings = newWebView.getSettings();
+            settings.setUserAgentString("Peergos-1.0.0-android-payment");
+            settings.setJavaScriptEnabled(true);
+
+            newWebView.setWebViewClient(new WebViewClient() {
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    System.out.println("WebViewClient payment page url loaded " + request.getUrl().toString());
+                    if (request.getUrl().getHost().endsWith("peergos.net"))
+                        return false;
+                    return true;
+                }
+            });
+
+            newWebView.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public void onCloseWindow(WebView window) {
+                    super.onCloseWindow(window);
+                    view.removeView(newWebView);
+                    view.requestFocus();
+                }
+            });
+
+            return true;
+
+//            WebView.HitTestResult result = view.getHitTestResult();
+//            String data = result.getExtra();
+//            if (data != null) {
+//                Context context = view.getContext();
+//                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(data));
+//                context.startActivity(browserIntent);
+//            } else {
+//                Message hrefMsg = new Message();
+//                hrefMsg.setTarget(new Handler() {
+//                    @SuppressLint("HandlerLeak")
+//                    @Override
+//                    public void handleMessage(Message msg) {
+//                        super.handleMessage(msg);
+//                        System.out.println("DATA: " + msg.getData());
+//                        String url = msg.getData().getString("url");
+//                        System.out.println("URL: " + url);
+//                        if (url != null) {
+//                            Context context = view.getContext();
+//                            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(data));
+//                            context.startActivity(browserIntent);
+//                        }
+//                    }
+//                });
+//                view.requestFocusNodeHref(hrefMsg);
+//            }
+//            return false;
         }
     }
 
@@ -356,6 +425,7 @@ public class MainActivity extends AppCompatActivity {
 
         Args a = Args.parse(new String[]{
                 "PEERGOS_PATH", peergosDir.toString(),
+//                "-peergos-url", "https://test.peergos.net",
                 "-mutable-pointers-cache", "pointer-cache.sql",
                 "-account-cache-sql-file", "account-cache.sql",
                 "-pki-cache-sql-file", "pki-cache.sql",
