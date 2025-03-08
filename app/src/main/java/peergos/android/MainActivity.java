@@ -12,6 +12,7 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.view.ViewGroup;
 import android.webkit.DownloadListener;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
@@ -302,8 +303,10 @@ public class MainActivity extends AppCompatActivity {
                 return false;
             WebView newWebView = new WebView(MainActivity.this);
             view.addView(newWebView);
-            AbsoluteLayout.LayoutParams params = new AbsoluteLayout.LayoutParams(view.getWidth(), view.getHeight(), 0, 0);
+            AbsoluteLayout.LayoutParams params = new AbsoluteLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 0);
             newWebView.setLayoutParams(params);
+            view.scrollTo(0, 0);
 
             WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
             transport.setWebView(newWebView);
@@ -333,33 +336,6 @@ public class MainActivity extends AppCompatActivity {
             });
 
             return true;
-
-//            WebView.HitTestResult result = view.getHitTestResult();
-//            String data = result.getExtra();
-//            if (data != null) {
-//                Context context = view.getContext();
-//                Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(data));
-//                context.startActivity(browserIntent);
-//            } else {
-//                Message hrefMsg = new Message();
-//                hrefMsg.setTarget(new Handler() {
-//                    @SuppressLint("HandlerLeak")
-//                    @Override
-//                    public void handleMessage(Message msg) {
-//                        super.handleMessage(msg);
-//                        System.out.println("DATA: " + msg.getData());
-//                        String url = msg.getData().getString("url");
-//                        System.out.println("URL: " + url);
-//                        if (url != null) {
-//                            Context context = view.getContext();
-//                            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(data));
-//                            context.startActivity(browserIntent);
-//                        }
-//                    }
-//                });
-//                view.requestFocusNodeHref(hrefMsg);
-//            }
-//            return false;
         }
     }
 
