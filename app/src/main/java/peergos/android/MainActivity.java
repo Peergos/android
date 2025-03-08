@@ -99,7 +99,7 @@ import peergos.shared.util.Constants;
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
-    WebView webView;
+    WebView webView, cardDetails;
     Crypto crypto;
     HttpPoster poster;
     ContentAddressedStorage localDht;
@@ -301,22 +301,22 @@ public class MainActivity extends AppCompatActivity {
         public boolean onCreateWindow(WebView view, boolean dialog, boolean userGesture, android.os.Message resultMsg) {
             if (! userGesture)
                 return false;
-            WebView newWebView = new WebView(MainActivity.this);
-            view.addView(newWebView);
+            cardDetails = new WebView(MainActivity.this);
+            view.addView(cardDetails);
             AbsoluteLayout.LayoutParams params = new AbsoluteLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT, 0, 0);
-            newWebView.setLayoutParams(params);
+            cardDetails.setLayoutParams(params);
             view.scrollTo(0, 0);
 
             WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
-            transport.setWebView(newWebView);
+            transport.setWebView(cardDetails);
             resultMsg.sendToTarget();
 
-            WebSettings settings = newWebView.getSettings();
+            WebSettings settings = cardDetails.getSettings();
             settings.setUserAgentString("Peergos-1.0.0-android-payment");
             settings.setJavaScriptEnabled(true);
 
-            newWebView.setWebViewClient(new WebViewClient() {
+            cardDetails.setWebViewClient(new WebViewClient() {
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                     System.out.println("WebViewClient payment page url loaded " + request.getUrl().toString());
@@ -326,11 +326,12 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
-            newWebView.setWebChromeClient(new WebChromeClient() {
+            cardDetails.setWebChromeClient(new WebChromeClient() {
                 @Override
                 public void onCloseWindow(WebView window) {
                     super.onCloseWindow(window);
-                    view.removeView(newWebView);
+                    view.removeView(cardDetails);
+                    MainActivity.this.cardDetails = null;
                     view.requestFocus();
                 }
             });
@@ -381,6 +382,11 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (cardDetails != null) {
+            webView.removeView(cardDetails);
+            cardDetails = null;
+            return;
+        }
         if(webView.canGoBack()) {
             webView.goBack();
         } else {
