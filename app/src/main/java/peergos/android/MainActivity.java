@@ -144,6 +144,9 @@ public class MainActivity extends AppCompatActivity {
         // for handling Android Device [Back] key press
         webView.canGoBackOrForward(99);
 
+        // enable text selection (in theory)
+        webView.setLongClickable(true);
+
         // handling web page browsing mechanism
         webView.setWebViewClient(new NavigationHandler());
 
@@ -170,6 +173,9 @@ public class MainActivity extends AppCompatActivity {
         settings.setAllowContentAccess(true);
         settings.setSupportMultipleWindows(true);
         settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setSupportZoom(true);
+        settings.setBuiltInZoomControls(true);
+        settings.setDisplayZoomControls(false);
 
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
