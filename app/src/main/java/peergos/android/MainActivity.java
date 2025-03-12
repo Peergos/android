@@ -42,6 +42,8 @@ import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -421,9 +423,22 @@ public class MainActivity extends AppCompatActivity {
                 "port", port + ""
         });
         try {
+            // check if the local server is already running first
+            URI api = new URI("http://localhost:" + port);
+            AndroidPoster localPoster = new AndroidPoster(api.toURL(), false, Optional.empty(), Optional.empty());
+            ScryptJava hasher = new ScryptJava();
+            ContentAddressedStorage localhostDht = NetworkAccess.buildLocalDht(localPoster, true, hasher);
+            boolean alreadyRunning = false;
+            try {
+                localhostDht.ids().join();
+                alreadyRunning = true;
+            } catch (Exception e){}
+            if (alreadyRunning)
+                return true;
+
+            // now start the server
             URL target = new URL(a.getArg("peergos-url", "https://peergos.net"));
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
-            ScryptJava hasher = new ScryptJava();
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
             CoreNode core = NetworkAccess.buildDirectCorenode(poster);
             ContentAddressedStorage s3 = NetworkAccess.buildDirectS3Blockstore(localDht, core, poster, true, hasher).join();
@@ -466,7 +481,7 @@ public class MainActivity extends AppCompatActivity {
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,
                     connectionBacklog, handlerPoolSize);
-        } catch (IOException e) {
+        } catch (IOException | URISyntaxException e) {
             throw new RuntimeException(e);
         }
         return true;
