@@ -1,5 +1,6 @@
 zip -d app/libs/Peergos.jar com/google/errorprone/\*
 zip -d app/libs/Peergos.jar com/google/common/util/\*
+zip -d app/libs/Peergos.jar peergos/server/tests/\*
 zip -d app/libs/Peergos.jar kotlin/\*
 zip -d app/libs/Peergos.jar kotlinx/\*
 zip -d app/libs/Peergos.jar org/intellij/\*
