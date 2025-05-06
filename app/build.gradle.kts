@@ -8,7 +8,7 @@ android {
 
     defaultConfig {
         applicationId = "peergos.android"
-        minSdk = 26
+        minSdk = 30
         targetSdk = 35
         versionCode = 5
         versionName = "1.2.0"
@@ -40,6 +40,7 @@ dependencies {
     implementation(files("libs/Peergos.jar"))
     implementation(files("libs/http-2.2.1.jar"))
     implementation(files("libs/sun-common-server.jar"))
+    implementation(libs.exifinterface)
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

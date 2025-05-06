@@ -96,6 +96,7 @@ import peergos.shared.user.HttpPoster;
 import peergos.shared.user.ServerMessager;
 import peergos.shared.user.fs.AbsoluteCapability;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.user.fs.ThumbnailGenerator;
 import peergos.shared.util.Constants;
 
 public class MainActivity extends AppCompatActivity {
@@ -119,7 +120,10 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
+//        System.out.println(Environment.isExternalStorageManager());
+
         crypto = Main.initCrypto();
+        ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         try {
             poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
         } catch (MalformedURLException e) {
@@ -471,7 +475,7 @@ public class MainActivity extends AppCompatActivity {
             OfflineBatCache offlineBats = new OfflineBatCache(batCave, new JdbcBatCave(Builder.getDBConnector(a, "bat-cache-sql-file", dbConnector), commands));
 
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
-                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null);
+                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null, Optional.of(a));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
