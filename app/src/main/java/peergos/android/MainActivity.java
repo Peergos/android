@@ -122,7 +122,7 @@ public class MainActivity extends AppCompatActivity {
         System.out.println("Peergos v1");
 //        System.out.println(Environment.isExternalStorageManager());
 
-        crypto = Main.initCrypto();
+        crypto = Main.initCrypto(new CachingHasher(Paths.get(getFilesDir().getAbsolutePath()).resolve("scrypt-cache.txt").toFile()));
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         try {
             poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
