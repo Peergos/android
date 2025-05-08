@@ -1,5 +1,11 @@
 package peergos.android;
 
+import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
+import static android.Manifest.permission.READ_MEDIA_IMAGES;
+import static android.Manifest.permission.READ_MEDIA_VIDEO;
+import static android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED;
+
+import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
@@ -10,6 +16,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.view.ViewGroup;
@@ -28,6 +35,7 @@ import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
@@ -49,11 +57,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -107,6 +117,8 @@ public class MainActivity extends AppCompatActivity {
     HttpPoster poster;
     ContentAddressedStorage localDht;
     CoreNode core;
+    ActivityResultLauncher requestPermissions;
+    CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
     ServiceWorkerClient serviceWorker;
     ProgressDialog progressDialog;
@@ -116,11 +128,73 @@ public class MainActivity extends AppCompatActivity {
     private static final int file_chooser_activity_code = 1;
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
+    private void printTree(File dir) {
+        System.out.println("DIR: " + dir.getAbsolutePath());
+        File[] kids = dir.listFiles();
+        if (kids != null) {
+            System.out.println(kids.length + " children");
+            for (File kid : kids) {
+                if (kid.isDirectory())
+                    printTree(kid);
+            }
+        }
+    }
+
+    private void requestPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            requestPermissions.launch(new String[]{READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_VISUAL_USER_SELECTED});
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions.launch(new String[]{READ_MEDIA_IMAGES, READ_MEDIA_VIDEO});
+        } else {
+            requestPermissions.launch(new String[]{READ_EXTERNAL_STORAGE});
+        }
+    }
+
+    private void listDirs(File dir, List<String> res) {
+        File[] kids = dir.listFiles();
+        if (kids != null) {
+            for (File kid : kids) {
+                if (kid.isDirectory() && ! kid.isHidden()) {
+                    res.add(kid.getAbsolutePath());
+                    listDirs(kid, res);
+                }
+            }
+        }
+    }
+
+    public CompletableFuture<List<String>> getHostDirs(String prefix) {
+        requestPermissions();
+        return gotPermissions.thenApply(x -> {
+            List<String> res = new ArrayList<>();
+            for (String type : List.of(Environment.DIRECTORY_DCIM,
+                    Environment.DIRECTORY_PICTURES,
+                    Environment.DIRECTORY_MOVIES,
+                    Environment.DIRECTORY_DOCUMENTS,
+                    Environment.DIRECTORY_DOWNLOADS,
+                    Environment.DIRECTORY_MUSIC,
+                    Environment.DIRECTORY_PODCASTS)) {
+                File dir = Environment.getExternalStoragePublicDirectory(type);
+                String path = dir.getAbsolutePath();
+                if (path.startsWith(prefix) || prefix.startsWith(path))
+                    listDirs(dir, res);
+                System.out.println("GET host dirs res");
+                System.out.println(res);
+            }
+            return res;
+        });
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
 //        System.out.println(Environment.isExternalStorageManager());
+
+        requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
+            System.out.println("PERMISSIONS");
+            System.out.println(m);
+            gotPermissions.complete(true);
+        });
 
         crypto = Main.initCrypto(new CachingHasher(Paths.get(getFilesDir().getAbsolutePath()).resolve("scrypt-cache.txt").toFile()));
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
@@ -475,7 +549,7 @@ public class MainActivity extends AppCompatActivity {
             OfflineBatCache offlineBats = new OfflineBatCache(batCave, new JdbcBatCave(Builder.getDBConnector(a, "bat-cache-sql-file", dbConnector), commands));
 
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
-                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null, Optional.of(a));
+                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null, Optional.of(a), Optional.of(this::getHostDirs));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
