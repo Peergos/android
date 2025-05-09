@@ -41,6 +41,11 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.work.Constraints;
+import androidx.work.Data;
+import androidx.work.NetworkType;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
 
 import com.webauthn4j.data.client.Origin;
 
@@ -63,7 +68,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -71,6 +78,7 @@ import peergos.server.Builder;
 import peergos.server.DirectOnlyStorage;
 import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
+import peergos.server.SyncProperties;
 import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
 import peergos.server.crypto.hash.ScryptJava;
@@ -79,6 +87,7 @@ import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
+import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
@@ -127,18 +136,6 @@ public class MainActivity extends AppCompatActivity {
     // this value will be used by WebChromeClient during file upload
     private static final int file_chooser_activity_code = 1;
     private static ValueCallback<Uri[]> mUploadMessageArr;
-
-    private void printTree(File dir) {
-        System.out.println("DIR: " + dir.getAbsolutePath());
-        File[] kids = dir.listFiles();
-        if (kids != null) {
-            System.out.println(kids.length + " children");
-            for (File kid : kids) {
-                if (kid.isDirectory())
-                    printTree(kid);
-            }
-        }
-    }
 
     private void requestPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -237,7 +234,7 @@ public class MainActivity extends AppCompatActivity {
         serviceWorker = new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-                System.out.println("in service worker. isMainFrame:" + request.isForMainFrame() + ": " + request.getUrl());
+//                System.out.println("in service worker. isMainFrame:" + request.isForMainFrame() + ": " + request.getUrl());
 
                 return super.shouldInterceptRequest(request);
             }
@@ -283,7 +280,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view,
                                                           WebResourceRequest request) {
-            System.out.println("in webview client. isMainFrame:"+request.isForMainFrame() +": " + request.getUrl());
+//            System.out.println("in webview client. isMainFrame:"+request.isForMainFrame() +": " + request.getUrl());
             return serviceWorker.shouldInterceptRequest(request);
 //            return null;
 //            return super.shouldInterceptRequest(view, request);
@@ -491,6 +488,7 @@ public class MainActivity extends AppCompatActivity {
         // make sure sqlite loads correct shared library on Android
         System.out.println("Initial runtime name: " + System.getProperty("java.runtime.name", ""));
 
+        Path config = peergosDir.resolve("config");
         Args a = Args.parse(new String[]{
                 "PEERGOS_PATH", peergosDir.toString(),
 //                "-peergos-url", "https://test.peergos.net",
@@ -498,8 +496,10 @@ public class MainActivity extends AppCompatActivity {
                 "-account-cache-sql-file", "account-cache.sql",
                 "-pki-cache-sql-file", "pki-cache.sql",
                 "-bat-cache-sql-file", "bat-cache.sql",
+                "pki-cache-sql-file", "pki-cache.sqlite",
                 "port", port + ""
-        });
+        }, config.toFile().exists() ? Optional.of(config) : Optional.empty(), false);
+        a.saveToFile();
         try {
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
@@ -548,8 +548,26 @@ public class MainActivity extends AppCompatActivity {
 
             OfflineBatCache offlineBats = new OfflineBatCache(batCave, new JdbcBatCave(Builder.getDBConnector(a, "bat-cache-sql-file", dbConnector), commands));
 
+            Data syncArgs = new Data.Builder()
+                    .putString("PEERGOS_PATH", peergosDir.toString())
+                    .build();
+            Constraints constraints = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiresBatteryNotLow(true)
+                .setRequiresStorageNotLow(true)
+                .build();
+
+            WorkManager backgroundWork = WorkManager.getInstance(this);
+            SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 30, TimeUnit.SECONDS)
+                    .setConstraints(constraints)
+//                            .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
+                    .setId(UUID.randomUUID())
+                    .setInputData(syncArgs)
+                    .build());
+
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
-                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null, Optional.of(a), Optional.of(this::getHostDirs));
+                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
+                    Optional.of(new SyncProperties(a, syncer, this::getHostDirs)));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));

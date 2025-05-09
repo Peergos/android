@@ -32,6 +32,7 @@ android {
 }
 
 dependencies {
+    val work_version = "2.10.1"
 
     implementation(libs.appcompat)
     implementation(libs.material)
@@ -41,6 +42,7 @@ dependencies {
     implementation(files("libs/http-2.2.1.jar"))
     implementation(files("libs/sun-common-server.jar"))
     implementation(libs.exifinterface)
+    implementation("androidx.work:work-runtime:$work_version")
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
