@@ -27,11 +27,11 @@ import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
 import peergos.server.UserService;
-import peergos.server.crypto.hash.ScryptJava;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.sync.DirectorySync;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
+import peergos.shared.CryptreeCache;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
@@ -39,7 +39,6 @@ import peergos.shared.corenode.OfflineCorenode;
 import peergos.shared.mutable.CachingPointers;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointers;
-import peergos.shared.mutable.MutablePointersProxy;
 import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.storage.UnauthedCachingStorage;
 import peergos.shared.user.HttpPoster;
@@ -85,7 +84,7 @@ public class SyncWorker extends Worker {
             MutableTreeImpl tree = new MutableTreeImpl(mutable, storage, crypto.hasher, synchronizer);
             NetworkAccess network = new NetworkAccess(core, null, null, storage, null, Optional.empty(),
                     mutable, tree, synchronizer, null, null, null, crypto.hasher,
-                    Collections.emptyList(), false);
+                    Collections.emptyList(), new CryptreeCache(50), false);
             if (! args.hasArg("links")) {
                 System.out.println("No sync args");
                 return Result.success();

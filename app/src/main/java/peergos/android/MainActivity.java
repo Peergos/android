@@ -560,8 +560,8 @@ public class MainActivity extends AppCompatActivity {
             WorkManager backgroundWork = WorkManager.getInstance(this);
             SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 30, TimeUnit.SECONDS)
                     .setConstraints(constraints)
-//                            .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
-                    .setId(UUID.randomUUID())
+                            .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
+//                    .setId(UUID.randomUUID())
                     .setInputData(syncArgs)
                     .build());
 
