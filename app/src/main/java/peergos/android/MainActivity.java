@@ -41,6 +41,7 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.work.Configuration;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.NetworkType;
@@ -70,6 +71,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -557,6 +559,11 @@ public class MainActivity extends AppCompatActivity {
                 .setRequiresStorageNotLow(true)
                 .build();
 
+            WorkManager.initialize(
+                    this,
+                    new Configuration.Builder()
+                            .setExecutor(Executors.newFixedThreadPool(1))
+                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
             SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 30, TimeUnit.SECONDS)
                     .setConstraints(constraints)
