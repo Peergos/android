@@ -15,10 +15,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Bitmap;
+import android.media.ThumbnailUtils;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.util.Size;
 import android.view.ViewGroup;
 import android.webkit.DownloadListener;
 import android.webkit.ServiceWorkerClient;
@@ -52,6 +54,7 @@ import com.webauthn4j.data.client.Origin;
 
 import org.peergos.util.Futures;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -117,6 +120,7 @@ import peergos.shared.user.HttpPoster;
 import peergos.shared.user.ServerMessager;
 import peergos.shared.user.fs.AbsoluteCapability;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.user.fs.ThumbnailGenerator;
 import peergos.shared.util.Constants;
 
@@ -161,7 +165,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public CompletableFuture<List<String>> getHostDirs(String prefix) {
+    public CompletableFuture<List<String>> getHostDirs(String prefix, int depth) {
         requestPermissions();
         return gotPermissions.thenApply(x -> {
             List<String> res = new ArrayList<>();
@@ -482,6 +486,19 @@ public class MainActivity extends AppCompatActivity {
     public NetworkAccess buildLocalhostNetwork() {
         return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false);
     }
+
+    public static Optional<Thumbnail> generateVideoThumbnail(File f) {
+        try {
+            Bitmap thumb = ThumbnailUtils.createVideoThumbnail(f, new Size(400, 400), null);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            thumb.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
+
+            return Optional.of(new Thumbnail("image/webp", out.toByteArray()));
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
     
     public boolean startServer(int port) {
         File privateStorage = this.getFilesDir();
@@ -550,6 +567,8 @@ public class MainActivity extends AppCompatActivity {
 
             OfflineBatCache offlineBats = new OfflineBatCache(batCave, new JdbcBatCave(Builder.getDBConnector(a, "bat-cache-sql-file", dbConnector), commands));
 
+            ThumbnailGenerator.setVideoInstance(f -> generateVideoThumbnail(f));
+
             Data syncArgs = new Data.Builder()
                     .putString("PEERGOS_PATH", peergosDir.toString())
                     .build();
@@ -559,11 +578,11 @@ public class MainActivity extends AppCompatActivity {
                 .setRequiresStorageNotLow(true)
                 .build();
 
-            WorkManager.initialize(
-                    this,
-                    new Configuration.Builder()
-                            .setExecutor(Executors.newFixedThreadPool(1))
-                            .build());
+//            WorkManager.initialize(
+//                    this,
+//                    new Configuration.Builder()
+//                            .setExecutor(Executors.newFixedThreadPool(1))
+//                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
             SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 30, TimeUnit.SECONDS)
                     .setConstraints(constraints)
