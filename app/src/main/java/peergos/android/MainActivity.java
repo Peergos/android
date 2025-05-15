@@ -199,6 +199,13 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
         createNotificationChannel();
+        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
+                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+            return;
+        }
 //        System.out.println(Environment.isExternalStorageManager());
 
         requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
@@ -520,25 +527,6 @@ public class MainActivity extends AppCompatActivity {
             NotificationManager notificationManager = getSystemService(NotificationManager.class);
             notificationManager.createNotificationChannel(channel);
         }
-    }
-
-    public void showNotification(String text, String title) {
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT);
-
-        NotificationManagerCompat mgr = NotificationManagerCompat.from(this);
-        if (ActivityCompat.checkSelfPermission(this,
-                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
-            }
-            return;
-        }
-        // notificationId is a unique int for each notification that you must define.
-        mgr.notify(SYNC_NOTIFICATION_ID, builder.build());
     }
     
     public boolean startServer(int port) {

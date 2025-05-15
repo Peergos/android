@@ -1,19 +1,19 @@
 package peergos.android;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 
 import androidx.annotation.NonNull;
-import androidx.work.Constraints;
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.work.Data;
-import androidx.work.NetworkType;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
 import org.peergos.util.Futures;
 
 import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -59,6 +59,7 @@ public class SyncWorker extends Worker {
     @Override
     public Result doWork() {
         System.out.println("SYNC: starting work");
+        showNotification("Sync", "Starting sync");
         Data params = this.params.getInputData();
         int sleepMillis = params.getInt("sleep", 0);
         try {
@@ -110,11 +111,28 @@ public class SyncWorker extends Worker {
             int maxDownloadParallelism = args.getInt("max-parallelism", 32);
             int minFreeSpacePercent = args.getInt("min-free-space-percent", 5);
             DirectorySync.syncDir(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
-                    maxDownloadParallelism, minFreeSpacePercent, true, peergosDir, network, crypto);
+                    maxDownloadParallelism, minFreeSpacePercent, true, peergosDir, m -> showNotification("Sync", m), network, crypto);
         } catch (MalformedURLException e) {
             e.printStackTrace();
         }
 
         return Result.success();
+    }
+
+    public void showNotification(String title, String text) {
+        DirectorySync.log(text);
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
+                .setSmallIcon(R.drawable.notification_background)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT);
+
+        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
+        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
+                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        // notificationId is a unique int for each notification that you must define.
+        mgr.notify(MainActivity.SYNC_NOTIFICATION_ID, builder.build());
     }
 }
