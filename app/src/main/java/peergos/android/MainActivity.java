@@ -584,7 +584,7 @@ public class MainActivity extends AppCompatActivity {
 //                            .setExecutor(Executors.newFixedThreadPool(1))
 //                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
-            SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 30, TimeUnit.SECONDS)
+            SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
                     .setConstraints(constraints)
                             .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
 //                    .setId(UUID.randomUUID())

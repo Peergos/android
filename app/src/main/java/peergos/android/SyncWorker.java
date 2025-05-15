@@ -22,6 +22,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
@@ -91,9 +93,24 @@ public class SyncWorker extends Worker {
             }
             List<String> links = new ArrayList<>(Arrays.asList(args.getArg("links").split(",")));
             List<String> localDirs = new ArrayList<>(Arrays.asList(args.getArg("local-dirs").split(",")));
+            List<Boolean> syncLocalDeletes = args.hasArg("sync-local-deletes") ?
+                    new ArrayList<>(Arrays.stream(args.getArg("sync-local-deletes").split(","))
+                            .map(Boolean::parseBoolean)
+                            .collect(Collectors.toList())) :
+                    IntStream.range(0, links.size())
+                            .mapToObj(x -> true)
+                            .collect(Collectors.toList());
+            List<Boolean> syncRemoteDeletes = args.hasArg("sync-remote-deletes") ?
+                    new ArrayList<>(Arrays.stream(args.getArg("sync-remote-deletes").split(","))
+                            .map(Boolean::parseBoolean)
+                            .collect(Collectors.toList())) :
+                    IntStream.range(0, links.size())
+                            .mapToObj(x -> true)
+                            .collect(Collectors.toList());
             int maxDownloadParallelism = args.getInt("max-parallelism", 32);
             int minFreeSpacePercent = args.getInt("min-free-space-percent", 5);
-            DirectorySync.syncDir(links, localDirs, maxDownloadParallelism, minFreeSpacePercent, true, peergosDir, network, crypto);
+            DirectorySync.syncDir(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
+                    maxDownloadParallelism, minFreeSpacePercent, true, peergosDir, network, crypto);
         } catch (MalformedURLException e) {
             e.printStackTrace();
         }
