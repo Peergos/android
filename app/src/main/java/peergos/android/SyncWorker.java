@@ -115,8 +115,14 @@ public class SyncWorker extends Worker {
         } catch (MalformedURLException e) {
             e.printStackTrace();
         }
+        closeNotification();
 
         return Result.success();
+    }
+
+    public void closeNotification() {
+        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
+        mgr.cancel(MainActivity.SYNC_NOTIFICATION_ID);
     }
 
     public void showNotification(String title, String text) {
