@@ -43,6 +43,7 @@ dependencies {
     implementation(files("libs/sun-common-server.jar"))
     implementation(libs.exifinterface)
     implementation("androidx.work:work-runtime:$work_version")
+    implementation("androidx.core:core-ktx:1.16.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

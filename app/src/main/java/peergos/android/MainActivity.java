@@ -9,11 +9,14 @@ import androidx.activity.result.contract.ActivityResultContracts.RequestMultiple
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
@@ -39,11 +42,13 @@ import android.widget.Toast;
 import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.work.Configuration;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.NetworkType;
@@ -127,6 +132,8 @@ import peergos.shared.util.Constants;
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
+    public static final String SYNC_CHANNEL_ID = "sync-updates";
+    public static final int SYNC_NOTIFICATION_ID = 77;
     WebView webView, cardDetails;
     Crypto crypto;
     HttpPoster poster;
@@ -191,6 +198,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
+        createNotificationChannel();
 //        System.out.println(Environment.isExternalStorageManager());
 
         requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
@@ -498,6 +506,39 @@ public class MainActivity extends AppCompatActivity {
         } catch (IOException e) {
             return Optional.empty();
         }
+    }
+
+    private void createNotificationChannel() {
+        // Create the NotificationChannel, but only on API 26+ because
+        // the NotificationChannel class is not in the Support Library.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel(SYNC_CHANNEL_ID, "Sync", importance);
+            channel.setDescription("Sync updates");
+            // Register the channel with the system; you can't change the importance
+            // or other notification behaviors after this.
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+
+    public void showNotification(String text, String title) {
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, SYNC_CHANNEL_ID)
+                .setSmallIcon(R.drawable.notification_background)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT);
+
+        NotificationManagerCompat mgr = NotificationManagerCompat.from(this);
+        if (ActivityCompat.checkSelfPermission(this,
+                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+            return;
+        }
+        // notificationId is a unique int for each notification that you must define.
+        mgr.notify(SYNC_NOTIFICATION_ID, builder.build());
     }
     
     public boolean startServer(int port) {
