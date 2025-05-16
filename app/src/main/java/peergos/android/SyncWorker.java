@@ -2,6 +2,7 @@ package peergos.android;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
@@ -110,8 +111,9 @@ public class SyncWorker extends Worker {
                             .collect(Collectors.toList());
             int maxDownloadParallelism = args.getInt("max-parallelism", 32);
             int minFreeSpacePercent = args.getInt("min-free-space-percent", 5);
-            DirectorySync.syncDir(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
-                    maxDownloadParallelism, minFreeSpacePercent, true, peergosDir, m -> showNotification("Sync", m), network, crypto);
+
+            DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
+                    maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri), getApplicationContext(), crypto.hasher), peergosDir, m -> showNotification("Sync", m), network, crypto);
         } catch (MalformedURLException e) {
             e.printStackTrace();
         }

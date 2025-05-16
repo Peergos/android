@@ -23,6 +23,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.provider.DocumentsContract;
 import android.util.Size;
 import android.view.ViewGroup;
 import android.webkit.DownloadListener;
@@ -43,8 +45,6 @@ import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -79,7 +79,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -128,6 +127,7 @@ import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.user.fs.ThumbnailGenerator;
 import peergos.shared.util.Constants;
+import peergos.shared.util.Either;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -140,6 +140,7 @@ public class MainActivity extends AppCompatActivity {
     ContentAddressedStorage localDht;
     CoreNode core;
     ActivityResultLauncher requestPermissions;
+    CompletableFuture<String> chosenHostDir;
     CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
     ServiceWorkerClient serviceWorker;
@@ -150,7 +151,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int file_chooser_activity_code = 1;
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
-    private void requestPermissions() {
+    private void requestMediaPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             requestPermissions.launch(new String[]{READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_VISUAL_USER_SELECTED});
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -172,8 +173,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    public CompletableFuture<List<String>> getHostDirs(String prefix, int depth) {
-        requestPermissions();
+    public CompletableFuture<List<String>> getHostMediaDirs(String prefix, int depth) {
+        requestMediaPermissions();
         return gotPermissions.thenApply(x -> {
             List<String> res = new ArrayList<>();
             for (String type : List.of(Environment.DIRECTORY_DCIM,
@@ -194,6 +195,24 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
+
+    private CompletableFuture<String> chooseDirToAccess() {
+        CompletableFuture<String> res = new CompletableFuture<>();
+        chosenHostDir = res;
+        StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+        Intent intent = sm.getPrimaryStorageVolume().createOpenDocumentTreeIntent();
+//            String startDir = "DCIM%2FCamera";
+//            Uri uri = intent.getParcelableExtra("android.provider.extra.INITIAL_URI");
+//            String scheme = uri.toString();
+//            scheme = scheme.replace("/root/", "/document/");
+//            scheme += "%3A" + startDir;
+//            uri = Uri.parse(scheme);
+//            intent.putExtra("android.provider.extra.INITIAL_URI", uri);
+        startActivityForResult(intent, REQUEST_ACTION_OPEN_DOCUMENT_TREE);
+        return res;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -204,9 +223,7 @@ public class MainActivity extends AppCompatActivity {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
             }
-            return;
         }
-//        System.out.println(Environment.isExternalStorageManager());
 
         requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
             System.out.println("PERMISSIONS");
@@ -472,6 +489,19 @@ public class MainActivity extends AppCompatActivity {
                 mUploadMessageArr = null;
                 Toast.makeText(MainActivity.this, "Error getting file", Toast.LENGTH_LONG).show();
             }
+        } else if (requestCode == REQUEST_ACTION_OPEN_DOCUMENT_TREE) {
+            System.out.println("Got FOLDER ACCESS");
+            Uri uri = null;
+            if (data != null) {
+                uri = data.getData();
+                // eg. content://com.android.externalstorage.documents/tree/primary%3ADocuments
+                getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                // Perform operations on the document using its URI.
+                Uri docUri = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri));
+                chosenHostDir.complete(uri.toString());
+                System.out.println("HEEEEER: " + uri);
+            }
         }
     }
 
@@ -622,7 +652,7 @@ public class MainActivity extends AppCompatActivity {
 
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(a, syncer, this::getHostDirs)));
+                    Optional.of(new SyncProperties(a, syncer, Either.b(this::chooseDirToAccess))));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
