@@ -48,12 +48,12 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
 
     @Override
     public long totalSpace() throws IOException {
-        return Long.MAX_VALUE;
+        return Long.MAX_VALUE / 1_000;
     }
 
     @Override
     public long freeSpace() throws IOException {
-        return Long.MAX_VALUE / 2;
+        return Long.MAX_VALUE / 2_000;
     }
 
     @Override
@@ -67,6 +67,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     private DocumentFile getByPath(Path p) {
+        if (p == null)
+            return DocumentFile.fromTreeUri(context, rootUri);
         List<String> path = new ArrayList<>(p.getNameCount());
         if (! p.toString().isBlank())
             for (int i=0; i < p.getNameCount(); i++)
@@ -84,11 +86,14 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
 
     @Override
     public boolean exists(Path p) {
-        return getByPath(p).exists();
+        DocumentFile file = getByPath(p);
+        return file != null && file.exists();
     }
 
     @Override
     public void mkdirs(Path p) {
+        if (p.getNameCount() == 0 || p.toString().isEmpty()) // base dir
+            return;
         Path parent = p.getParent();
         if (! exists(parent))
             mkdirs(parent);
@@ -260,7 +265,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState) {
         DocumentFile f = getByPath(p);
         byte[] buf = new byte[4 * 1024];
-        long size = p.toFile().length();
+        long size = f.length();
         int chunkOffset = 0;
         List<byte[]> chunkHashes = new ArrayList<>();
 

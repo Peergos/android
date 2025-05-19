@@ -30,6 +30,7 @@ import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
 import peergos.server.UserService;
+import peergos.server.net.SyncConfigHandler;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.sync.DirectorySync;
 import peergos.server.util.Args;
@@ -68,7 +69,7 @@ public class SyncWorker extends Worker {
         } catch (InterruptedException ignored) {}
         Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
         Crypto crypto = Main.initCrypto(new CachingHasher(peergosDir.resolve("scrypt-cache.txt").toFile()));
-        Path configFile = peergosDir.resolve("config");
+        Path configFile = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
         Args args = Args.parse(new String[0], Optional.of(configFile), false);
         try {
             URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
