@@ -68,7 +68,7 @@ public class SyncWorker extends Worker {
             Thread.sleep(sleepMillis);
         } catch (InterruptedException ignored) {}
         Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
-        Crypto crypto = Main.initCrypto(new CachingHasher(peergosDir.resolve("scrypt-cache.txt").toFile()));
+        Crypto crypto = Main.initCrypto(new ScryptAndroid());
         Path configFile = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
         Args args = Args.parse(new String[0], Optional.of(configFile), false);
         try {

@@ -90,7 +90,6 @@ import peergos.server.Main;
 import peergos.server.SyncProperties;
 import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
-import peergos.server.crypto.hash.ScryptJava;
 import peergos.server.login.JdbcAccount;
 import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.sql.SqlSupplier;
@@ -103,6 +102,7 @@ import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
 import peergos.shared.corenode.OfflineCorenode;
+import peergos.shared.crypto.hash.Hasher;
 import peergos.shared.login.OfflineAccountStore;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointersProxy;
@@ -231,7 +231,7 @@ public class MainActivity extends AppCompatActivity {
             gotPermissions.complete(true);
         });
 
-        crypto = Main.initCrypto(new CachingHasher(Paths.get(getFilesDir().getAbsolutePath()).resolve("scrypt-cache.txt").toFile()));
+        crypto = Main.initCrypto(new ScryptAndroid());
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         try {
             poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
@@ -582,7 +582,7 @@ public class MainActivity extends AppCompatActivity {
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
             AndroidPoster localPoster = new AndroidPoster(api.toURL(), false, Optional.empty(), Optional.empty());
-            ScryptJava hasher = new ScryptJava();
+            Hasher hasher = new ScryptAndroid();
             ContentAddressedStorage localhostDht = NetworkAccess.buildLocalDht(localPoster, true, hasher);
             boolean alreadyRunning = false;
             try {
