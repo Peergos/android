@@ -13,8 +13,6 @@ public class ScryptAndroid extends ScryptJava {
 
     static {
         System.loadLibrary("scrypt");
-        System.out.println("Loaded native scrypt!");
-
     }
 
     native void crypto_scrypt(byte[] pass, int passLen, byte[] salt, int saltLen, int mem, int cpu, int p, byte[] outBytes, int outLen);
