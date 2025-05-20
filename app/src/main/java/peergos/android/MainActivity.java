@@ -151,50 +151,6 @@ public class MainActivity extends AppCompatActivity {
     private static final int file_chooser_activity_code = 1;
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
-    private void requestMediaPermissions() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            requestPermissions.launch(new String[]{READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_VISUAL_USER_SELECTED});
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            requestPermissions.launch(new String[]{READ_MEDIA_IMAGES, READ_MEDIA_VIDEO});
-        } else {
-            requestPermissions.launch(new String[]{READ_EXTERNAL_STORAGE});
-        }
-    }
-
-    private void listDirs(File dir, List<String> res) {
-        File[] kids = dir.listFiles();
-        if (kids != null) {
-            for (File kid : kids) {
-                if (kid.isDirectory() && ! kid.isHidden()) {
-                    res.add(kid.getAbsolutePath());
-                    listDirs(kid, res);
-                }
-            }
-        }
-    }
-
-    public CompletableFuture<List<String>> getHostMediaDirs(String prefix, int depth) {
-        requestMediaPermissions();
-        return gotPermissions.thenApply(x -> {
-            List<String> res = new ArrayList<>();
-            for (String type : List.of(Environment.DIRECTORY_DCIM,
-                    Environment.DIRECTORY_PICTURES,
-                    Environment.DIRECTORY_MOVIES,
-                    Environment.DIRECTORY_DOCUMENTS,
-                    Environment.DIRECTORY_DOWNLOADS,
-                    Environment.DIRECTORY_MUSIC,
-                    Environment.DIRECTORY_PODCASTS)) {
-                File dir = Environment.getExternalStoragePublicDirectory(type);
-                String path = dir.getAbsolutePath();
-                if (path.startsWith(prefix) || prefix.startsWith(path))
-                    listDirs(dir, res);
-                System.out.println("GET host dirs res");
-                System.out.println(res);
-            }
-            return res;
-        });
-    }
-
     private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
 
     private CompletableFuture<String> chooseDirToAccess() {
