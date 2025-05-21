@@ -447,16 +447,13 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (requestCode == REQUEST_ACTION_OPEN_DOCUMENT_TREE) {
             System.out.println("Got FOLDER ACCESS");
-            Uri uri = null;
             if (data != null) {
-                uri = data.getData();
+                Uri uri = uri = data.getData();
                 // eg. content://com.android.externalstorage.documents/tree/primary%3ADocuments
                 getContentResolver().takePersistableUriPermission(uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 // Perform operations on the document using its URI.
-                Uri docUri = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri));
                 chosenHostDir.complete(uri.toString());
-                System.out.println("HEEEEER: " + uri);
             }
         }
     }
