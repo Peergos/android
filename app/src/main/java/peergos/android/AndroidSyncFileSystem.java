@@ -1,11 +1,14 @@
 package peergos.android;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 
 import androidx.documentfile.provider.DocumentFile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -258,7 +261,20 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
 
     @Override
     public Optional<Thumbnail> getThumbnail(Path p) {
-        return Optional.empty();
+        DocumentFile file = getByPath(p);
+        String type = file.getType();
+        if (type == null || ! type.startsWith("video"))
+            return Optional.empty();
+        try (MediaMetadataRetriever mmr = new MediaMetadataRetriever()) {
+            mmr.setDataSource(context, file.getUri());
+            Bitmap thumb = mmr.getScaledFrameAtTime(1000, MediaMetadataRetriever.OPTION_NEXT_SYNC, 400, 400);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            thumb.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
+
+            return Optional.of(new Thumbnail("image/webp", out.toByteArray()));
+        } catch (IOException e) {
+            return Optional.empty();
+        }
     }
 
     @Override
