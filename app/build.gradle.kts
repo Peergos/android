@@ -8,12 +8,17 @@ android {
 
     defaultConfig {
         applicationId = "peergos.android"
-        minSdk = 26
+        minSdk = 30
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.2.0"
+        versionCode = 6
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                cppFlags += ""
+            }
+        }
     }
 
     buildTypes {
@@ -29,9 +34,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
+    val work_version = "2.10.1"
 
     implementation(libs.appcompat)
     implementation(libs.material)
@@ -40,6 +52,9 @@ dependencies {
     implementation(files("libs/Peergos.jar"))
     implementation(files("libs/http-2.2.1.jar"))
     implementation(files("libs/sun-common-server.jar"))
+    implementation(libs.exifinterface)
+    implementation("androidx.work:work-runtime:$work_version")
+    implementation("androidx.core:core-ktx:1.16.0")
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

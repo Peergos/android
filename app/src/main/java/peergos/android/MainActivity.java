@@ -1,17 +1,31 @@
 package peergos.android;
 
+import static android.Manifest.permission.READ_EXTERNAL_STORAGE;
+import static android.Manifest.permission.READ_MEDIA_IMAGES;
+import static android.Manifest.permission.READ_MEDIA_VIDEO;
+import static android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED;
+
+import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.media.ThumbnailUtils;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.provider.DocumentsContract;
+import android.util.Size;
 import android.view.ViewGroup;
 import android.webkit.DownloadListener;
 import android.webkit.ServiceWorkerClient;
@@ -28,16 +42,24 @@ import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.work.Constraints;
+import androidx.work.Data;
+import androidx.work.NetworkType;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
 
 import com.webauthn4j.data.client.Origin;
 
 import org.peergos.util.Futures;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -49,11 +71,15 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -61,20 +87,22 @@ import peergos.server.Builder;
 import peergos.server.DirectOnlyStorage;
 import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
+import peergos.server.SyncProperties;
 import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
-import peergos.server.crypto.hash.ScryptJava;
 import peergos.server.login.JdbcAccount;
 import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
+import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
 import peergos.shared.corenode.OfflineCorenode;
+import peergos.shared.crypto.hash.Hasher;
 import peergos.shared.login.OfflineAccountStore;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointersProxy;
@@ -96,16 +124,24 @@ import peergos.shared.user.HttpPoster;
 import peergos.shared.user.ServerMessager;
 import peergos.shared.user.fs.AbsoluteCapability;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.user.fs.Thumbnail;
+import peergos.shared.user.fs.ThumbnailGenerator;
 import peergos.shared.util.Constants;
+import peergos.shared.util.Either;
 
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
+    public static final String SYNC_CHANNEL_ID = "sync-updates";
+    public static final int SYNC_NOTIFICATION_ID = 77;
     WebView webView, cardDetails;
     Crypto crypto;
     HttpPoster poster;
     ContentAddressedStorage localDht;
     CoreNode core;
+    ActivityResultLauncher requestPermissions;
+    CompletableFuture<String> chosenHostDir;
+    CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
     ServiceWorkerClient serviceWorker;
     ProgressDialog progressDialog;
@@ -115,11 +151,44 @@ public class MainActivity extends AppCompatActivity {
     private static final int file_chooser_activity_code = 1;
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
+    private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
+
+    private CompletableFuture<String> chooseDirToAccess() {
+        CompletableFuture<String> res = new CompletableFuture<>();
+        chosenHostDir = res;
+        StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
+        Intent intent = sm.getPrimaryStorageVolume().createOpenDocumentTreeIntent();
+//            String startDir = "DCIM%2FCamera";
+//            Uri uri = intent.getParcelableExtra("android.provider.extra.INITIAL_URI");
+//            String scheme = uri.toString();
+//            scheme = scheme.replace("/root/", "/document/");
+//            scheme += "%3A" + startDir;
+//            uri = Uri.parse(scheme);
+//            intent.putExtra("android.provider.extra.INITIAL_URI", uri);
+        startActivityForResult(intent, REQUEST_ACTION_OPEN_DOCUMENT_TREE);
+        return res;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         System.out.println("Peergos v1");
-        crypto = Main.initCrypto();
+        createNotificationChannel();
+        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
+                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
+            }
+        }
+
+        requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
+            System.out.println("PERMISSIONS");
+            System.out.println(m);
+            gotPermissions.complete(true);
+        });
+
+        crypto = Main.initCrypto(new ScryptAndroid());
+        ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         try {
             poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
         } catch (MalformedURLException e) {
@@ -159,7 +228,7 @@ public class MainActivity extends AppCompatActivity {
         serviceWorker = new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
-                System.out.println("in service worker. isMainFrame:" + request.isForMainFrame() + ": " + request.getUrl());
+//                System.out.println("in service worker. isMainFrame:" + request.isForMainFrame() + ": " + request.getUrl());
 
                 return super.shouldInterceptRequest(request);
             }
@@ -205,7 +274,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public WebResourceResponse shouldInterceptRequest(WebView view,
                                                           WebResourceRequest request) {
-            System.out.println("in webview client. isMainFrame:"+request.isForMainFrame() +": " + request.getUrl());
+//            System.out.println("in webview client. isMainFrame:"+request.isForMainFrame() +": " + request.getUrl());
             return serviceWorker.shouldInterceptRequest(request);
 //            return null;
 //            return super.shouldInterceptRequest(view, request);
@@ -376,6 +445,16 @@ public class MainActivity extends AppCompatActivity {
                 mUploadMessageArr = null;
                 Toast.makeText(MainActivity.this, "Error getting file", Toast.LENGTH_LONG).show();
             }
+        } else if (requestCode == REQUEST_ACTION_OPEN_DOCUMENT_TREE) {
+            System.out.println("Got FOLDER ACCESS");
+            if (data != null) {
+                Uri uri = uri = data.getData();
+                // eg. content://com.android.externalstorage.documents/tree/primary%3ADocuments
+                getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                // Perform operations on the document using its URI.
+                chosenHostDir.complete(uri.toString());
+            }
         }
     }
 
@@ -405,6 +484,33 @@ public class MainActivity extends AppCompatActivity {
     public NetworkAccess buildLocalhostNetwork() {
         return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false);
     }
+
+    public static Optional<Thumbnail> generateVideoThumbnail(File f) {
+        try {
+            Bitmap thumb = ThumbnailUtils.createVideoThumbnail(f, new Size(400, 400), null);
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            thumb.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
+
+            return Optional.of(new Thumbnail("image/webp", out.toByteArray()));
+        } catch (IOException e) {
+            return Optional.empty();
+        }
+    }
+
+    private void createNotificationChannel() {
+        // Create the NotificationChannel, but only on API 26+ because
+        // the NotificationChannel class is not in the Support Library.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel(SYNC_CHANNEL_ID, "Sync", importance);
+            channel.setDescription("Sync updates");
+            // Register the channel with the system; you can't change the importance
+            // or other notification behaviors after this.
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
     
     public boolean startServer(int port) {
         File privateStorage = this.getFilesDir();
@@ -413,6 +519,7 @@ public class MainActivity extends AppCompatActivity {
         // make sure sqlite loads correct shared library on Android
         System.out.println("Initial runtime name: " + System.getProperty("java.runtime.name", ""));
 
+        Path config = peergosDir.resolve("config");
         Args a = Args.parse(new String[]{
                 "PEERGOS_PATH", peergosDir.toString(),
 //                "-peergos-url", "https://test.peergos.net",
@@ -420,13 +527,15 @@ public class MainActivity extends AppCompatActivity {
                 "-account-cache-sql-file", "account-cache.sql",
                 "-pki-cache-sql-file", "pki-cache.sql",
                 "-bat-cache-sql-file", "bat-cache.sql",
+                "pki-cache-sql-file", "pki-cache.sqlite",
                 "port", port + ""
-        });
+        }, config.toFile().exists() ? Optional.of(config) : Optional.empty(), false);
+        a.saveToFile();
         try {
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
             AndroidPoster localPoster = new AndroidPoster(api.toURL(), false, Optional.empty(), Optional.empty());
-            ScryptJava hasher = new ScryptJava();
+            Hasher hasher = new ScryptAndroid();
             ContentAddressedStorage localhostDht = NetworkAccess.buildLocalDht(localPoster, true, hasher);
             boolean alreadyRunning = false;
             try {
@@ -470,8 +579,33 @@ public class MainActivity extends AppCompatActivity {
 
             OfflineBatCache offlineBats = new OfflineBatCache(batCave, new JdbcBatCave(Builder.getDBConnector(a, "bat-cache-sql-file", dbConnector), commands));
 
+            ThumbnailGenerator.setVideoInstance(f -> generateVideoThumbnail(f));
+
+            Data syncArgs = new Data.Builder()
+                    .putString("PEERGOS_PATH", peergosDir.toString())
+                    .build();
+            Constraints constraints = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiresBatteryNotLow(true)
+                .setRequiresStorageNotLow(true)
+                .build();
+
+//            WorkManager.initialize(
+//                    this,
+//                    new Configuration.Builder()
+//                            .setExecutor(Executors.newFixedThreadPool(1))
+//                            .build());
+            WorkManager backgroundWork = WorkManager.getInstance(this);
+            SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
+                    .setConstraints(constraints)
+                            .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
+//                    .setId(UUID.randomUUID())
+                    .setInputData(syncArgs)
+                    .build());
+
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
-                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null);
+                    httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
+                    Optional.of(new SyncProperties(a, syncer, Either.b(this::chooseDirToAccess))));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
