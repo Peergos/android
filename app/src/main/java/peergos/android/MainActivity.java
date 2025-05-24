@@ -52,6 +52,7 @@ import androidx.core.view.WindowInsetsCompat;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 
@@ -584,10 +585,13 @@ public class MainActivity extends AppCompatActivity {
             Data syncArgs = new Data.Builder()
                     .putString("PEERGOS_PATH", peergosDir.toString())
                     .build();
-            Constraints constraints = new Constraints.Builder()
+            Constraints periodic = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.UNMETERED)
                 .setRequiresBatteryNotLow(true)
                 .setRequiresStorageNotLow(true)
+                .build();
+
+            Constraints once = new Constraints.Builder()
                 .build();
 
 //            WorkManager.initialize(
@@ -596,12 +600,27 @@ public class MainActivity extends AppCompatActivity {
 //                            .setExecutor(Executors.newFixedThreadPool(1))
 //                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
-            SyncRunner syncer = () -> backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
-                    .setConstraints(constraints)
-                            .setId(UUID.fromString("fe64ee2f-a2a2-4dab-96d8-0aec9475541f"))
-//                    .setId(UUID.randomUUID())
-                    .setInputData(syncArgs)
-                    .build());
+            SyncRunner syncer = new SyncRunner() {
+                private static final String periodicUuid = "fe64ee2f-a2a2-4dab-96d8-0aec9475541f";
+
+                @Override
+                public void start() {
+                    backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
+                            .setConstraints(periodic)
+                            .setId(UUID.fromString(periodicUuid))
+                            .setInputData(syncArgs)
+                            .build());
+                }
+
+                @Override
+                public void runNow() {
+                    backgroundWork.enqueue(new OneTimeWorkRequest.Builder(SyncWorker.class)
+                            .setConstraints(once)
+                            .setId(UUID.randomUUID())
+                            .setInputData(syncArgs)
+                            .build());
+                }
+            };
 
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
