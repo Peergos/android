@@ -66,9 +66,33 @@ public class AndroidImageThumbnailer implements ThumbnailGenerator.Generator {
                 return rotateImage(img, 180);
             case ExifInterface.ORIENTATION_ROTATE_270:
                 return rotateImage(img, 270);
+            case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+                return flipHorizontal(img);
+            case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+                return flipVertical(img);
+            case ExifInterface.ORIENTATION_TRANSVERSE:
+                return rotateImage(flipHorizontal(img), 90);
+            case ExifInterface.ORIENTATION_TRANSPOSE:
+                return rotateImage(flipHorizontal(img), 270);
             default:
                 return img;
         }
+    }
+
+    private static Bitmap flipVertical(Bitmap img) {
+        Matrix matrix = new Matrix();
+        matrix.postScale(-1.0f, 1.0f);
+        Bitmap rotatedImg = Bitmap.createBitmap(img, 0, 0, img.getWidth(), img.getHeight(), matrix, true);
+        img.recycle();
+        return rotatedImg;
+    }
+
+    private static Bitmap flipHorizontal(Bitmap img) {
+        Matrix matrix = new Matrix();
+        matrix.postScale(1.0f, -1.0f);
+        Bitmap rotatedImg = Bitmap.createBitmap(img, 0, 0, img.getWidth(), img.getHeight(), matrix, true);
+        img.recycle();
+        return rotatedImg;
     }
 
     private static Bitmap rotateImage(Bitmap img, int degree) {
