@@ -81,7 +81,7 @@ public class AndroidImageThumbnailer implements ThumbnailGenerator.Generator {
 
     private static Bitmap flipVertical(Bitmap img) {
         Matrix matrix = new Matrix();
-        matrix.postScale(-1.0f, 1.0f);
+        matrix.postScale(1.0f, -1.0f);
         Bitmap rotatedImg = Bitmap.createBitmap(img, 0, 0, img.getWidth(), img.getHeight(), matrix, true);
         img.recycle();
         return rotatedImg;
@@ -89,7 +89,7 @@ public class AndroidImageThumbnailer implements ThumbnailGenerator.Generator {
 
     private static Bitmap flipHorizontal(Bitmap img) {
         Matrix matrix = new Matrix();
-        matrix.postScale(1.0f, -1.0f);
+        matrix.postScale(-1.0f, 1.0f);
         Bitmap rotatedImg = Bitmap.createBitmap(img, 0, 0, img.getWidth(), img.getHeight(), matrix, true);
         img.recycle();
         return rotatedImg;
