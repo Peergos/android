@@ -1,5 +1,8 @@
 package peergos.android;
 
+import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+
+import android.app.Notification;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -9,6 +12,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.work.Data;
+import androidx.work.ForegroundInfo;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -134,10 +138,19 @@ public class SyncWorker extends Worker {
 
     public void showNotification(String title, String text) {
         DirectorySync.log(text);
+//        Context context = getApplicationContext();
+        // This PendingIntent can be used to cancel the worker
+//        PendingIntent intent = WorkManager.getInstance(context)
+//                .createCancelPendingIntent(getId());
+
         NotificationCompat.Builder builder = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
                 .setSmallIcon(R.drawable.notification_background)
                 .setContentTitle(title)
                 .setContentText(text)
+                .setOngoing(true)
+                // Add the cancel action to the notification which can
+                // be used to cancel the worker
+//                .addAction(android.R.drawable.ic_delete, "Cancel", intent)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT);
 
         NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
@@ -146,6 +159,9 @@ public class SyncWorker extends Worker {
             return;
         }
         // notificationId is a unique int for each notification that you must define.
-        mgr.notify(MainActivity.SYNC_NOTIFICATION_ID, builder.build());
+        Notification notif = builder.build();
+        mgr.notify(MainActivity.SYNC_NOTIFICATION_ID, notif);
+        if (AppLifecycleObserver.inForeground.get())
+            setForegroundAsync(new ForegroundInfo(MainActivity.SYNC_NOTIFICATION_ID, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
     }
 }
