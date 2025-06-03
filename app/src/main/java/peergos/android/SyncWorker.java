@@ -124,6 +124,9 @@ public class SyncWorker extends Worker {
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri), getApplicationContext(), crypto.hasher), peergosDir, m -> showNotification("Sync", m), network, crypto);
             } catch (MalformedURLException e) {
                 e.printStackTrace();
+            } catch (Exception e) {
+                showNotification("Sync error", e.getMessage());
+                return Result.failure();
             }
             closeNotification();
 
