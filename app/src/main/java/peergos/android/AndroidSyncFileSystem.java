@@ -20,6 +20,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -318,9 +319,9 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         applyToSubtree(Paths.get(""), root, onFile, onDir);
     }
 
-    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir) throws IOException {
+    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir) {
         DocumentFile[] kids = dir.listFiles();
-        for (DocumentFile kid : kids) {
+        Arrays.stream(kids).parallel().forEach(kid -> {
             FileProps props = new FileProps(p.resolve(kid.getName()).toString(), kid.lastModified() / 1000 * 1000, kid.length(), Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
@@ -328,6 +329,6 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 onDir.accept(props);
                 applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir);
             }
-        }
+        });
     }
 }
