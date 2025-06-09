@@ -135,7 +135,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
 
     @Override
     public long getLastModified(Path p) {
-        return getByPath(p).lastModified();
+        return getByPath(p).lastModified() / 1000 * 1000;
     }
 
     @Override
