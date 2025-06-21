@@ -37,6 +37,7 @@ import peergos.server.UserService;
 import peergos.server.net.SyncConfigHandler;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.sync.DirectorySync;
+import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
 import peergos.shared.CryptreeCache;
@@ -54,6 +55,7 @@ import peergos.shared.user.MutableTreeImpl;
 import peergos.shared.user.WriteSynchronizer;
 
 public class SyncWorker extends Worker {
+    public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
 
     public static final Object lock = new Object();
     private final WorkerParameters params;
@@ -67,7 +69,7 @@ public class SyncWorker extends Worker {
     public Result doWork() {
         synchronized (lock) {
             System.out.println("SYNC: starting work");
-            showNotification("Sync", "Starting sync");
+            showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID);
             Data params = this.params.getInputData();
             int sleepMillis = params.getInt("sleep", 0);
             try {
@@ -121,25 +123,36 @@ public class SyncWorker extends Worker {
                 int minFreeSpacePercent = args.getInt("min-free-space-percent", 5);
 
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
-                        maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri), getApplicationContext(), crypto.hasher), peergosDir, m -> showNotification("Sync", m), network, crypto);
+                        maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
+                                getApplicationContext(), crypto.hasher), peergosDir,
+                        m -> {
+                            showNotification("Sync", m, MainActivity.SYNC_NOTIFICATION_ID);
+                            status.setStatus(m);
+                        },
+                        e -> {
+                            if (e != null && !e.isEmpty())
+                                showNotification("Sync error", e, MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                            status.setError(e);
+                        }, network, crypto);
             } catch (MalformedURLException e) {
                 e.printStackTrace();
             } catch (Exception e) {
-                showNotification("Sync error", e.getMessage());
+                status.setError(e.getMessage());
+                showNotification("Sync error", e.getMessage(), MainActivity.SYNC_NOTIFICATION_ERROR_ID);
                 return Result.failure();
             }
-            closeNotification();
+            closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
 
             return Result.success();
         }
     }
 
-    public void closeNotification() {
+    public void closeNotification(int notificationId) {
         NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
-        mgr.cancel(MainActivity.SYNC_NOTIFICATION_ID);
+        mgr.cancel(notificationId);
     }
 
-    public void showNotification(String title, String text) {
+    public void showNotification(String title, String text, int notificationId) {
         DirectorySync.log(text);
 //        Context context = getApplicationContext();
         // This PendingIntent can be used to cancel the worker
@@ -163,8 +176,8 @@ public class SyncWorker extends Worker {
         }
         // notificationId is a unique int for each notification that you must define.
         Notification notif = builder.build();
-        mgr.notify(MainActivity.SYNC_NOTIFICATION_ID, notif);
+        mgr.notify(notificationId, notif);
         if (AppLifecycleObserver.inForeground.get())
-            setForegroundAsync(new ForegroundInfo(MainActivity.SYNC_NOTIFICATION_ID, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
+            setForegroundAsync(new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
     }
 }

@@ -131,6 +131,7 @@ public class MainActivity extends AppCompatActivity {
     public static final int PORT = 7777;
     public static final String SYNC_CHANNEL_ID = "sync-updates";
     public static final int SYNC_NOTIFICATION_ID = 77;
+    public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
     WebView webView, cardDetails;
     Crypto crypto;
     HttpPoster poster;
@@ -617,6 +618,11 @@ public class MainActivity extends AppCompatActivity {
                             .setId(UUID.randomUUID())
                             .setInputData(syncArgs)
                             .build());
+                }
+
+                @Override
+                public StatusHolder getStatusHolder() {
+                    return SyncWorker.status;
                 }
             };
 
