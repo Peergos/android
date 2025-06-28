@@ -20,6 +20,7 @@ import org.peergos.util.Futures;
 
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -137,8 +138,13 @@ public class SyncWorker extends Worker {
             } catch (MalformedURLException e) {
                 e.printStackTrace();
             } catch (Exception e) {
-                status.setError(e.getMessage());
-                showNotification("Sync error", e.getMessage(), MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                if (e.getCause() instanceof UnknownHostException)
+                    return Result.failure();
+                String msg = e.getMessage();
+                if (msg != null && !msg.trim().isEmpty()) {
+                    status.setError(msg);
+                    showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                }
                 return Result.failure();
             }
             closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
