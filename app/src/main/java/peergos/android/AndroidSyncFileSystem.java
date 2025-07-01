@@ -125,7 +125,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             try {
                 AsyncReader reader = getBytes(src, 0);
                 mkdirs(dest.getParent());
-                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty());
+                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty(), p -> {});
                 srcFile.delete();
             } catch (IOException e) {
                 throw new RuntimeException(e);
@@ -176,7 +176,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                          long size,
                          Optional<HashTree> hash,
                          Optional<LocalDateTime> modified,
-                         Optional<Thumbnail> thumb) throws IOException {
+                         Optional<Thumbnail> thumb,
+                         Consumer<String> progress) throws IOException {
         if (! exists(p)) {
             DocumentFile parent = getByPath(p.getParent());
             byte[] start = new byte[(int)Math.min(1024L, size)];
@@ -198,6 +199,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     int read = reader.readIntoArray(buf, 0, Math.min(buf.length, (int) (size - written))).join();
                     fout.write(buf, 0, read);
                     written += read;
+                    if (written >= 1024*1024)
+                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
                 }
             }
         } else {
@@ -211,6 +214,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     int read = reader.readIntoArray(buf, 0, Math.min(buf.length, (int) (size - written))).join();
                     fout.write(buf, 0, read);
                     written += read;
+                    if (written >= 1024*1024)
+                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
                 }
             }
         }
