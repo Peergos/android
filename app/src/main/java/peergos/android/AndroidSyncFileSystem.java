@@ -101,7 +101,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         Path parent = p.getParent();
         if (! exists(parent))
             mkdirs(parent);
-        getByPath(parent).createDirectory(p.getFileName().toString());
+        if (! exists(p))
+            getByPath(parent).createDirectory(p.getFileName().toString());
     }
 
     @Override
