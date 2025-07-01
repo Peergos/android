@@ -146,8 +146,9 @@ public class SyncWorker extends Worker {
                     showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID);
                 }
                 return Result.failure();
+            } finally {
+                closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
             }
-            closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
 
             return Result.success();
         }
