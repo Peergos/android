@@ -69,19 +69,20 @@ public class SyncWorker extends Worker {
     @Override
     public Result doWork() {
         synchronized (lock) {
-            System.out.println("SYNC: starting work");
-            showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID);
-            Data params = this.params.getInputData();
-            int sleepMillis = params.getInt("sleep", 0);
             try {
-                Thread.sleep(sleepMillis);
-            } catch (InterruptedException ignored) {
-            }
-            Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
-            Crypto crypto = Main.initCrypto(new ScryptAndroid());
-            Path configFile = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
-            Args args = Args.parse(new String[0], Optional.of(configFile), false);
-            try {
+                System.out.println("SYNC: starting work");
+                showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                Data params = this.params.getInputData();
+                int sleepMillis = params.getInt("sleep", 0);
+                try {
+                    Thread.sleep(sleepMillis);
+                } catch (InterruptedException ignored) {
+                }
+                Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
+                Crypto crypto = Main.initCrypto(new ScryptAndroid());
+                Path configFile = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+                Args args = Args.parse(new String[0], Optional.of(configFile), false);
+
                 URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
                 HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
                 ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
