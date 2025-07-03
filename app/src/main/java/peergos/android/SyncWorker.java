@@ -127,7 +127,6 @@ public class SyncWorker extends Worker {
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
                                 getApplicationContext(), crypto.hasher), peergosDir,
                         m -> {
-                            showNotification("Sync", m, MainActivity.SYNC_NOTIFICATION_ID);
                             status.setStatus(m);
                         },
                         e -> {
