@@ -287,7 +287,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     @Override
     public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState) {
         DocumentFile f = getByPath(p);
-        byte[] buf = new byte[4 * 1024];
+        byte[] buf = new byte[64 * 1024];
         long size = f.length();
         int chunkOffset = 0;
         List<byte[]> chunkHashes = new ArrayList<>();

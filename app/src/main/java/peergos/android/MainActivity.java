@@ -67,7 +67,9 @@ import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -604,10 +606,11 @@ public class MainActivity extends AppCompatActivity {
 
                 @Override
                 public void start() {
+                    runNow();
                     backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
                             .setConstraints(periodic)
                             .setId(UUID.fromString(periodicUuid))
-                            .setInputData(syncArgs)
+                            .setInputData(syncArgs).setInitialDelay(Duration.of(1, ChronoUnit.MINUTES))
                             .build());
                 }
 
