@@ -71,7 +71,7 @@ public class SyncWorker extends Worker {
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
-                showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_MIN);
                 Data params = this.params.getInputData();
                 int sleepMillis = params.getInt("sleep", 0);
                 try {
@@ -132,7 +132,7 @@ public class SyncWorker extends Worker {
                         },
                         e -> {
                             if (e != null && !e.isEmpty())
-                                showNotification("Sync error", e, MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                                showNotification("Sync error", e, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
                             status.setError(e);
                         }, network, crypto);
             } catch (MalformedURLException e) {
@@ -143,7 +143,7 @@ public class SyncWorker extends Worker {
                 String msg = e.getMessage();
                 if (msg != null && !msg.trim().isEmpty()) {
                     status.setError(msg);
-                    showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID);
+                    showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
                 }
                 return Result.failure();
             } finally {
@@ -159,7 +159,7 @@ public class SyncWorker extends Worker {
         mgr.cancel(notificationId);
     }
 
-    public void showNotification(String title, String text, int notificationId) {
+    public void showNotification(String title, String text, int notificationId, int priority) {
         DirectorySync.log(text);
 //        Context context = getApplicationContext();
         // This PendingIntent can be used to cancel the worker
@@ -174,7 +174,7 @@ public class SyncWorker extends Worker {
                 // Add the cancel action to the notification which can
                 // be used to cancel the worker
 //                .addAction(android.R.drawable.ic_delete, "Cancel", intent)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT);
+                .setPriority(priority);
 
         NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
         if (ActivityCompat.checkSelfPermission(getApplicationContext(),
