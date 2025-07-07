@@ -21,11 +21,17 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import peergos.server.sync.SyncFilesystem;
@@ -37,6 +43,7 @@ import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.crypto.hash.Hasher;
+import peergos.shared.util.Futures;
 import peergos.shared.util.Triple;
 
 public class AndroidSyncFileSystem implements SyncFilesystem {
@@ -284,16 +291,11 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         }
     }
 
-    @Override
-    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState) {
-        DocumentFile f = getByPath(p);
-        byte[] buf = new byte[64 * 1024];
-        long size = f.length();
-        int chunkOffset = 0;
+    public static List<byte[]> hashChunks(InputStream fin, long size) {
         List<byte[]> chunkHashes = new ArrayList<>();
-
-        try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "r");
-             FileInputStream fin = new FileInputStream(pfd.getFileDescriptor())) {
+        int chunkOffset = 0;
+        byte[] buf = new byte[64 * 1024];
+        try {
             MessageDigest chunkHash = MessageDigest.getInstance("SHA-256");
             for (long i = 0; i < size; ) {
                 int read = fin.read(buf);
@@ -310,11 +312,52 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
             if (size == 0 || size % Chunk.MAX_SIZE != 0)
                 chunkHashes.add(chunkHash.digest());
-
-            return HashTree.build(chunkHashes, hasher).join();
+            return chunkHashes;
         } catch (IOException | NoSuchAlgorithmException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public static List<byte[]> parallelHashChunks(Supplier<InputStream> fins, int nThreads, long size) {
+        int nChunks = (int) ((size + Chunk.MAX_SIZE - 1)/ Chunk.MAX_SIZE);
+        long chunksPerThread = (nChunks + nThreads - 1) / nThreads;
+        if (size < Chunk.MAX_SIZE)
+            return hashChunks(fins.get(), size);
+        return IntStream.range(0, nThreads)
+                .parallel()
+                .mapToObj(i -> {
+                    try (InputStream fin = fins.get()) {
+                        long start = i * chunksPerThread * Chunk.MAX_SIZE;
+                        long end = Math.min(size, (i + 1) * chunksPerThread * Chunk.MAX_SIZE);
+                        if (start == end || start > size)
+                            return Collections.<byte[]>emptyList();
+                        long skipped = fin.skip(start);
+                        if (skipped != start)
+                            throw new IllegalStateException("Skip did not complete!");
+                        return hashChunks(fin, end - start);
+                    } catch (IOException e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .flatMap(List::stream)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState) {
+        DocumentFile f = getByPath(p);
+        long size = f.length();
+        int nCPUs = Runtime.getRuntime().availableProcessors();
+
+        List<byte[]> chunkHashes = parallelHashChunks(() -> {
+            try {
+                ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "r");
+                return new FileInputStream(pfd.getFileDescriptor());
+            } catch (FileNotFoundException e) {
+                throw new RuntimeException(e);
+            }
+        }, nCPUs, size);
+        return HashTree.build(chunkHashes, hasher).join();
     }
 
     @Override
