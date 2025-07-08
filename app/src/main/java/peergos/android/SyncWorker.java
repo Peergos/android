@@ -127,6 +127,7 @@ public class SyncWorker extends Worker {
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
                                 getApplicationContext(), crypto), peergosDir,
+                        status::isCancelled,
                         m -> {
                             status.setStatus(m);
                         },

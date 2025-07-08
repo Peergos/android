@@ -135,7 +135,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             try {
                 AsyncReader reader = getBytes(src, 0);
                 mkdirs(dest.getParent());
-                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty(), ResumeUploadProps.random(crypto), p -> {});
+                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty(), ResumeUploadProps.random(crypto), () -> false, p -> {});
                 srcFile.delete();
             } catch (IOException e) {
                 throw new RuntimeException(e);
@@ -188,6 +188,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                          Optional<LocalDateTime> modified,
                          Optional<Thumbnail> thumb,
                          ResumeUploadProps props,
+                         Supplier<Boolean> isCancelled,
                          Consumer<String> progress) throws IOException {
         if (! exists(p)) {
             DocumentFile parent = getByPath(p.getParent());
@@ -207,6 +208,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 long written = start.length;
                 fout.write(start);
                 while (written < size) {
+                    if (isCancelled.get())
+                        throw new IllegalStateException("Download cancelled!");
                     int read = reader.readIntoArray(buf, 0, Math.min(buf.length, (int) (size - written))).join();
                     fout.write(buf, 0, read);
                     written += read;
@@ -222,6 +225,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 byte[] buf = new byte[1024*1024];
                 long written = 0;
                 while (written < size) {
+                    if (isCancelled.get())
+                        throw new IllegalStateException("Download cancelled!");
                     int read = reader.readIntoArray(buf, 0, Math.min(buf.length, (int) (size - written))).join();
                     fout.write(buf, 0, read);
                     written += read;
