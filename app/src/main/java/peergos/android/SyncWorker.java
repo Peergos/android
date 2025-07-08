@@ -71,7 +71,7 @@ public class SyncWorker extends Worker {
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
-                showNotification("Sync", "Starting sync", MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_MIN);
+                showNotification("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_MIN);
                 Data params = this.params.getInputData();
                 int sleepMillis = params.getInt("sleep", 0);
                 try {
@@ -126,7 +126,7 @@ public class SyncWorker extends Worker {
 
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
-                                getApplicationContext(), crypto.hasher), peergosDir,
+                                getApplicationContext(), crypto), peergosDir,
                         m -> {
                             status.setStatus(m);
                         },

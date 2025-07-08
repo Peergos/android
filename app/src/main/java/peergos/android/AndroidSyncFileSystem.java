@@ -36,11 +36,13 @@ import java.util.stream.Stream;
 
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
+import peergos.shared.Crypto;
 import peergos.shared.user.fs.AsyncReader;
 import peergos.shared.user.fs.Chunk;
 import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
+import peergos.shared.user.fs.ResumeUploadProps;
 import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.crypto.hash.Hasher;
 import peergos.shared.util.Futures;
@@ -49,12 +51,12 @@ import peergos.shared.util.Triple;
 public class AndroidSyncFileSystem implements SyncFilesystem {
     private final Uri rootUri;
     private final Context context;
-    private final Hasher hasher;
+    private final Crypto crypto;
 
-    public AndroidSyncFileSystem(Uri rootUri, Context context, Hasher hasher) {
+    public AndroidSyncFileSystem(Uri rootUri, Context context, Crypto crypto) {
         this.rootUri = rootUri;
         this.context = context;
-        this.hasher = hasher;
+        this.crypto = crypto;
     }
 
     @Override
@@ -133,7 +135,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             try {
                 AsyncReader reader = getBytes(src, 0);
                 mkdirs(dest.getParent());
-                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty(), p -> {});
+                setBytes(dest, 0, reader, srcFile.length(), Optional.empty(), Optional.empty(), Optional.empty(), ResumeUploadProps.random(crypto), p -> {});
                 srcFile.delete();
             } catch (IOException e) {
                 throw new RuntimeException(e);
@@ -185,6 +187,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                          Optional<HashTree> hash,
                          Optional<LocalDateTime> modified,
                          Optional<Thumbnail> thumb,
+                         ResumeUploadProps props,
                          Consumer<String> progress) throws IOException {
         if (! exists(p)) {
             DocumentFile parent = getByPath(p.getParent());
@@ -357,7 +360,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 throw new RuntimeException(e);
             }
         }, nCPUs, size);
-        return HashTree.build(chunkHashes, hasher).join();
+        return HashTree.build(chunkHashes, crypto.hasher).join();
     }
 
     @Override
