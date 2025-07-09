@@ -71,7 +71,7 @@ public class SyncWorker extends Worker {
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
-                showNotification("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_MIN);
+                showNotification("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
                 Data params = this.params.getInputData();
                 int sleepMillis = params.getInt("sleep", 0);
                 try {
