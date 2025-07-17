@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -139,7 +140,7 @@ public class SyncWorker extends Worker {
             } catch (MalformedURLException e) {
                 e.printStackTrace();
             } catch (Exception e) {
-                if (e.getCause() instanceof UnknownHostException)
+                if (getCause(e) instanceof UnknownHostException)
                     return Result.failure();
                 String msg = e.getMessage();
                 if (msg != null && !msg.trim().isEmpty()) {
@@ -153,6 +154,17 @@ public class SyncWorker extends Worker {
 
             return Result.success();
         }
+    }
+
+    private static Throwable getCause(Throwable t) {
+        Throwable cause = t.getCause();
+        if (cause == null)
+            return t;
+        if (t instanceof ExecutionException)
+            return getCause(cause);
+        if (t instanceof RuntimeException)
+            return getCause(cause);
+        return cause;
     }
 
     public void closeNotification(int notificationId) {
