@@ -28,6 +28,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -163,6 +164,8 @@ public class SyncWorker extends Worker {
         if (t instanceof ExecutionException)
             return getCause(cause);
         if (t instanceof RuntimeException)
+            return getCause(cause);
+        if (t instanceof CompletionException)
             return getCause(cause);
         return cause;
     }
