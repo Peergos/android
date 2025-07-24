@@ -134,9 +134,13 @@ public class SyncWorker extends Worker {
                             status.setStatus(m);
                         },
                         e -> {
-                            if (e != null && !e.isEmpty())
-                                showNotification("Sync error", e, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
-                            status.setError(e);
+                            if (e != null) {
+                                Throwable cause = getCause(e);
+                                if (!(cause instanceof UnknownHostException)) {
+                                    showNotification("Sync error", cause.getMessage(), MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
+                                    status.setError(e.getMessage());
+                                }
+                            }
                         }, network, crypto);
             } catch (MalformedURLException e) {
                 e.printStackTrace();
