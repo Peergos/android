@@ -94,6 +94,7 @@ import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
+import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
@@ -631,7 +632,7 @@ public class MainActivity extends AppCompatActivity {
 
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(a, syncer, Either.b(this::chooseDirToAccess))));
+                    Optional.of(new SyncProperties(SyncConfig.fromArgs(a), a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));

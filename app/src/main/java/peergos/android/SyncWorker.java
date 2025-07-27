@@ -21,17 +21,15 @@ import org.peergos.util.Futures;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.UnknownHostException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
@@ -40,6 +38,7 @@ import peergos.server.UserService;
 import peergos.server.net.SyncConfigHandler;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.sync.DirectorySync;
+import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
@@ -48,6 +47,7 @@ import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
 import peergos.shared.corenode.OfflineCorenode;
+import peergos.shared.io.ipfs.api.JSONParser;
 import peergos.shared.mutable.CachingPointers;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointers;
@@ -82,8 +82,14 @@ public class SyncWorker extends Worker {
                 }
                 Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
                 Crypto crypto = Main.initCrypto(new ScryptAndroid());
-                Path configFile = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
-                Args args = Args.parse(new String[0], Optional.of(configFile), false);
+                Path oldConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
+                Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+
+                SyncConfig syncConfig = jsonSyncConfig.toFile().exists() ?
+                        SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
+                        SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldConfigFile), false));
+
+                Args args = Args.parse(new String[0], Optional.of(oldConfigFile), false);
 
                 URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
                 HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
@@ -103,33 +109,21 @@ public class SyncWorker extends Worker {
                 NetworkAccess network = new NetworkAccess(core, null, null, storage, null, Optional.empty(),
                         mutable, tree, synchronizer, null, null, null, crypto.hasher,
                         Collections.emptyList(), new CryptreeCache(50), false);
-                if (!args.hasArg("links")) {
+                if (syncConfig.links.isEmpty()) {
                     System.out.println("No sync args");
                     return Result.success();
                 }
-                List<String> links = new ArrayList<>(Arrays.asList(args.getArg("links").split(",")));
-                List<String> localDirs = new ArrayList<>(Arrays.asList(args.getArg("local-dirs").split(",")));
-                List<Boolean> syncLocalDeletes = args.hasArg("sync-local-deletes") ?
-                        new ArrayList<>(Arrays.stream(args.getArg("sync-local-deletes").split(","))
-                                .map(Boolean::parseBoolean)
-                                .collect(Collectors.toList())) :
-                        IntStream.range(0, links.size())
-                                .mapToObj(x -> true)
-                                .collect(Collectors.toList());
-                List<Boolean> syncRemoteDeletes = args.hasArg("sync-remote-deletes") ?
-                        new ArrayList<>(Arrays.stream(args.getArg("sync-remote-deletes").split(","))
-                                .map(Boolean::parseBoolean)
-                                .collect(Collectors.toList())) :
-                        IntStream.range(0, links.size())
-                                .mapToObj(x -> true)
-                                .collect(Collectors.toList());
-                int maxDownloadParallelism = args.getInt("max-parallelism", 32);
-                int minFreeSpacePercent = args.getInt("min-free-space-percent", 5);
+                List<String> links = syncConfig.links;
+                List<String> localDirs = syncConfig.localDirs;
+                List<Boolean> syncLocalDeletes = syncConfig.syncLocalDeletes;
+                List<Boolean> syncRemoteDeletes = syncConfig.syncRemoteDeletes;
+                int maxDownloadParallelism = syncConfig.maxDownloadParallelism;
+                int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
 
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
                                 getApplicationContext(), crypto), peergosDir,
-                        status::isCancelled,
+                        status,
                         m -> {
                             status.setStatus(m);
                         },

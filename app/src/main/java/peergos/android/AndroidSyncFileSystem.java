@@ -19,6 +19,7 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -26,8 +27,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -37,6 +36,7 @@ import java.util.stream.Stream;
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
 import peergos.shared.Crypto;
+import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.user.fs.AsyncReader;
 import peergos.shared.user.fs.Chunk;
 import peergos.shared.user.fs.FileWrapper;
@@ -44,8 +44,6 @@ import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.ResumeUploadProps;
 import peergos.shared.user.fs.Thumbnail;
-import peergos.shared.crypto.hash.Hasher;
-import peergos.shared.util.Futures;
 import peergos.shared.util.Triple;
 
 public class AndroidSyncFileSystem implements SyncFilesystem {
@@ -180,16 +178,16 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public void setBytes(Path p,
-                         long fileOffset,
-                         AsyncReader reader,
-                         long size,
-                         Optional<HashTree> hash,
-                         Optional<LocalDateTime> modified,
-                         Optional<Thumbnail> thumb,
-                         ResumeUploadProps props,
-                         Supplier<Boolean> isCancelled,
-                         Consumer<String> progress) throws IOException {
+    public Optional<LocalDateTime> setBytes(Path p,
+                                            long fileOffset,
+                                            AsyncReader reader,
+                                            long size,
+                                            Optional<HashTree> hash,
+                                            Optional<LocalDateTime> modified,
+                                            Optional<Thumbnail> thumb,
+                                            ResumeUploadProps props,
+                                            Supplier<Boolean> isCancelled,
+                                            Consumer<String> progress) throws IOException {
         if (! exists(p)) {
             DocumentFile parent = getByPath(p.getParent());
             byte[] start = new byte[(int)Math.min(1024L, size)];
@@ -235,6 +233,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 }
             }
         }
+        long lastModified = getLastModified(p);
+        return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int)((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
     }
 
     private InputStream getInputStream(DocumentFile file) {
@@ -369,11 +369,12 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public void applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir) throws IOException {
+    public Optional<PublicKeyHash> applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir) throws IOException {
         DocumentFile root = getByPath(Paths.get(""));
         if (root == null)
             throw new IllegalStateException("Couldn't retrieve local directory!");
         applyToSubtree(Paths.get(""), root, onFile, onDir);
+        return Optional.empty();
     }
 
     public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir) {
