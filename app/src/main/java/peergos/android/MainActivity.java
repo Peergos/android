@@ -64,16 +64,17 @@ import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -91,6 +92,7 @@ import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
 import peergos.server.login.JdbcAccount;
 import peergos.server.mutable.JdbcPointerCache;
+import peergos.server.net.SyncConfigHandler;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
@@ -103,6 +105,7 @@ import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
 import peergos.shared.corenode.OfflineCorenode;
 import peergos.shared.crypto.hash.Hasher;
+import peergos.shared.io.ipfs.api.JSONParser;
 import peergos.shared.login.OfflineAccountStore;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointersProxy;
@@ -630,9 +633,17 @@ public class MainActivity extends AppCompatActivity {
                 }
             };
 
+            Path oldSyncConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
+            Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+
+            boolean jsonExists = jsonSyncConfig.toFile().exists();
+            SyncConfig syncConfig = jsonExists ?
+                    SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
+                    SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldSyncConfigFile), false));
+
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(SyncConfig.fromArgs(a), a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))));
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))));
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));

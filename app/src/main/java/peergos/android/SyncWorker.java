@@ -85,7 +85,8 @@ public class SyncWorker extends Worker {
                 Path oldConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
                 Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
 
-                SyncConfig syncConfig = jsonSyncConfig.toFile().exists() ?
+                boolean jsonExists = jsonSyncConfig.toFile().exists();
+                SyncConfig syncConfig = jsonExists ?
                         SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
                         SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldConfigFile), false));
 
