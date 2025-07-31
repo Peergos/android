@@ -233,8 +233,12 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 }
             }
         }
-        long lastModified = getLastModified(p);
-        return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int)((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
+        try {
+            long lastModified = getLastModified(p);
+            return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
+        } catch (NullPointerException e) {
+            return Optional.empty();
+        }
     }
 
     private InputStream getInputStream(DocumentFile file) {
