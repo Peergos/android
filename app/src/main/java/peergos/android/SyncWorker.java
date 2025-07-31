@@ -90,7 +90,9 @@ public class SyncWorker extends Worker {
                         SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
                         SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldConfigFile), false));
 
-                Args args = Args.parse(new String[0], Optional.of(oldConfigFile), false);
+                Args args = Args.parse(new String[0], Optional.of(oldConfigFile), false)
+                        .with("PEERGOS_PATH", peergosDir.toString())
+                        .with("pki-cache-sql-file", "pki-cache.sqlite");
 
                 URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
                 HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
