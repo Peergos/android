@@ -189,7 +189,11 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                                             Supplier<Boolean> isCancelled,
                                             Consumer<String> progress) throws IOException {
         if (! exists(p)) {
-            DocumentFile parent = getByPath(p.getParent());
+            Path parentPath = p.getParent();
+            if (! exists(parentPath)) {
+                mkdirs(parentPath);
+            }
+            DocumentFile parent = getByPath(parentPath);
             byte[] start = new byte[(int)Math.min(1024L, size)];
             reader.readIntoArray(start, 0, start.length).join();
             String mimeType = MimeTypes.calculateMimeType(start, p.getFileName().toString());
