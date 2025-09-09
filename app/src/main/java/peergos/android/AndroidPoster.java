@@ -1,8 +1,6 @@
 package peergos.android;
 
 import org.peergos.util.Futures;
-import peergos.shared.io.ipfs.api.Multipart;
-import peergos.shared.io.ipfs.api.NamedStreamable;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;

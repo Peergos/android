@@ -7,6 +7,7 @@ zip -d app/libs/Peergos.jar org/intellij/\*
 zip -d app/libs/Peergos.jar org/jetbrains/\*
 zip -d app/libs/Peergos.jar DebugProbesKt.bin
 zip -d app/libs/Peergos.jar META-INF/kotlinx\*
+zip -d app/libs/Peergos.jar META-INF/versions/9\*
 zip -d app/libs/Peergos.jar org/sqlite/native/Mac/\*
 zip -d app/libs/Peergos.jar org/sqlite/native/Windows/\*
 zip -d app/libs/Peergos.jar org/sqlite/native/OpenBSD/\*
