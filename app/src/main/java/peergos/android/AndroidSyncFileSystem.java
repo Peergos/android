@@ -104,14 +104,19 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public void mkdirs(Path p) {
+    public synchronized void mkdirs(Path p) {
         if (p.getNameCount() == 0 || p.toString().isEmpty()) // base dir
             return;
         Path parent = p.getParent();
         if (! exists(parent))
             mkdirs(parent);
-        if (! exists(p))
-            getByPath(parent).get().createDirectory(p.getFileName().toString());
+        if (! exists(p)) {
+            DocumentFile parentDir = getByPath(parent).get();
+            String ourName = p.getFileName().toString();
+            DocumentFile subDir = parentDir.findFile(ourName);
+            if (subDir == null)
+                parentDir.createDirectory(ourName);
+        }
     }
 
     @Override
