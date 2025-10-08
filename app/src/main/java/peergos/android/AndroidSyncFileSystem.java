@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -386,6 +387,27 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
         }, nCPUs, size);
         return HashTree.build(chunkHashes, crypto.hasher).join();
+    }
+
+    @Override
+    public long filesCount() throws IOException {
+        AtomicLong count = new AtomicLong(0);
+        DocumentFile root = getByPath(Paths.get("")).orElseThrow(() -> new IllegalStateException("Absent sync root!"));
+        if (root == null)
+            throw new IllegalStateException("Couldn't retrieve local directory!");
+        filesCountRecurse(Paths.get(""), root, count);
+        return count.get();
+    }
+
+    private void filesCountRecurse(Path p, DocumentFile dir, AtomicLong count) {
+        DocumentFile[] kids = dir.listFiles();
+        Arrays.stream(kids).parallel().forEach(kid -> {
+            if (kid.isFile()) {
+                count.incrementAndGet();
+            } else {
+                filesCountRecurse(p.resolve(kid.getName()), kid, count);
+            }
+        });
     }
 
     @Override
