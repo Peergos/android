@@ -208,6 +208,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             reader.readIntoArray(start, 0, start.length).join();
             String mimeType = MimeTypes.calculateMimeType(start, p.getFileName().toString());
             DocumentFile file = parent.createFile(mimeType, p.getFileName().toString());
+            if (file == null)
+                throw new FileNotFoundException("Couldn't create local file: " + p);
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(file.getUri(), "w");
                  FileOutputStream fout = new FileOutputStream(pfd.getFileDescriptor())) {
                 long prefix = 0;
