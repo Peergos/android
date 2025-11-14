@@ -2,7 +2,9 @@ package peergos.android;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
+import android.media.ThumbnailUtils;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 
@@ -301,23 +303,76 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         });
     }
 
+    private Bitmap generateImageThumbnail(Uri uri) throws IOException {
+        try (InputStream in = context.getContentResolver().openInputStream(uri)) {
+            if (in == null)
+                return null;
+
+            Bitmap full = BitmapFactory.decodeStream(in);
+            if (full == null)
+                return null;
+
+            return ThumbnailUtils.extractThumbnail(full, 400, 400);
+        }
+    }
+
+    private Bitmap generateVideoThumbnail(Uri uri) {
+        try (MediaMetadataRetriever retriever = new MediaMetadataRetriever()) {
+            retriever.setDataSource(context, uri);
+
+            Bitmap frame = retriever.getScaledFrameAtTime(
+                    1_000_000,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
+                    400, 400
+            );
+
+            if (frame != null) return frame;
+
+            return retriever.getFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private byte[] compressToWebp(Bitmap bmp) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bmp.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
+        return out.toByteArray();
+    }
+
     @Override
     public Optional<Thumbnail> getThumbnail(Path p) {
         Optional<DocumentFile> existing = getByPath(p);
-        if (existing.isEmpty())
+        if (existing.isEmpty()) {
+            System.err.println("Thumbnail failure: couldn't get file " + p);
             return Optional.empty();
+        }
         DocumentFile file = existing.get();
         String type = file.getType();
+
         if (type == null || ! type.startsWith("video"))
             return Optional.empty();
-        try (MediaMetadataRetriever mmr = new MediaMetadataRetriever()) {
-            mmr.setDataSource(context, file.getUri());
-            Bitmap thumb = mmr.getScaledFrameAtTime(1000, MediaMetadataRetriever.OPTION_NEXT_SYNC, 400, 400);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            thumb.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
 
-            return Optional.of(new Thumbnail("image/webp", out.toByteArray()));
+        Bitmap image = null;
+        try {
+            if (type.startsWith("image")) {
+                image = generateImageThumbnail(file.getUri());
+            } else if (type.startsWith("video")) {
+                image = generateVideoThumbnail(file.getUri());
+            } else
+                return Optional.empty();
+
+            if (image == null) {
+                System.err.println("Thumbnail failure: bitmap was null for " + p);
+                return Optional.empty();
+            }
+
+            byte[] webpBytes = compressToWebp(image);
+            return Optional.of(new Thumbnail("image/webp", webpBytes));
         } catch (IOException e) {
+            e.printStackTrace();
             return Optional.empty();
         }
     }
