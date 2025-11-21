@@ -254,7 +254,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         try {
             long lastModified = getLastModified(p);
             return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
-        } catch (NullPointerException e) {
+        } catch (Exception e) {
             return Optional.empty();
         }
     }
