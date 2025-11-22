@@ -200,6 +200,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                                             ResumeUploadProps props,
                                             Supplier<Boolean> isCancelled,
                                             Consumer<String> progress) throws IOException {
+        long lastModified;
         if (! exists(p)) {
             Path parentPath = p.getParent();
             if (! exists(parentPath)) {
@@ -233,6 +234,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                         progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
                 }
             }
+            lastModified = file.lastModified() / 1000 * 1000;
         } else {
             DocumentFile existing = getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p));
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(existing.getUri(), "rw");
@@ -250,9 +252,9 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                         progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
                 }
             }
+            lastModified = existing.lastModified() / 1000 * 1000;
         }
         try {
-            long lastModified = getLastModified(p);
             return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
         } catch (Exception e) {
             return Optional.empty();
