@@ -201,7 +201,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                                             Supplier<Boolean> isCancelled,
                                             Consumer<String> progress) throws IOException {
         long lastModified;
-        if (! exists(p)) {
+        Optional<DocumentFile> existingFile = getByPath(p);
+        if (existingFile.isEmpty() || ! existingFile.get().exists()) {
             Path parentPath = p.getParent();
             if (! exists(parentPath)) {
                 mkdirs(parentPath);
@@ -236,7 +237,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
             lastModified = file.lastModified() / 1000 * 1000;
         } else {
-            DocumentFile existing = getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p));
+            DocumentFile existing = existingFile.get();
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(existing.getUri(), "rw");
                  FileOutputStream fout = new FileOutputStream(pfd.getFileDescriptor())) {
                 fout.getChannel().position(fileOffset);
@@ -254,11 +255,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
             lastModified = existing.lastModified() / 1000 * 1000;
         }
-        try {
-            return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
-        } catch (Exception e) {
-            return Optional.empty();
-        }
+        return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
     }
 
     private InputStream getInputStream(DocumentFile file) {
