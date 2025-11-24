@@ -202,6 +202,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                                             Consumer<String> progress) throws IOException {
         long lastModified;
         Optional<DocumentFile> existingFile = getByPath(p);
+        String filename = p.getFileName().toString();
         if (existingFile.isEmpty() || ! existingFile.get().exists()) {
             Path parentPath = p.getParent();
             if (! exists(parentPath)) {
@@ -210,8 +211,10 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             DocumentFile parent = getByPath(parentPath).orElseThrow(() -> new IllegalStateException("Absent dir: " + parentPath));
             byte[] start = new byte[(int)Math.min(1024L, size)];
             reader.readIntoArray(start, 0, start.length).join();
-            String mimeType = MimeTypes.calculateMimeType(start, p.getFileName().toString());
-            DocumentFile file = parent.createFile(mimeType, p.getFileName().toString());
+            String mimeType = MimeTypes.calculateMimeType(start, filename);
+            if (mimeType.equals("text/plain") && ! filename.endsWith(".txt"))
+                mimeType = "application/octet-stream";
+            DocumentFile file = parent.createFile(mimeType, filename);
             if (file == null)
                 throw new FileNotFoundException("Couldn't create local file: " + p);
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(file.getUri(), "w");
@@ -232,7 +235,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     fout.write(buf, 0, read);
                     written += read;
                     if (written >= 1024*1024)
-                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
+                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + filename);
                 }
             }
             lastModified = file.lastModified() / 1000 * 1000;
@@ -250,7 +253,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     fout.write(buf, 0, read);
                     written += read;
                     if (written >= 1024*1024)
-                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + p.getFileName().toString());
+                        progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + filename);
                 }
             }
             lastModified = existing.lastModified() / 1000 * 1000;
