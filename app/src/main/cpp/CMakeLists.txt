@@ -37,10 +37,17 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
 
 include_directories(scrypt)
 
-# Specifies libraries CMake should link to your target library. You
-# can link libraries from various origins, such as libraries defined in this
-# build script, prebuilt third-party libraries, or Android system libraries.
 target_link_libraries(${CMAKE_PROJECT_NAME}
-    # List libraries link to the target library
     android
     log)
+
+add_library(tweetnacl SHARED
+    tweetnacl/jni/peergos_server_crypto_JniTweetNacl.c
+)
+
+target_include_directories(tweetnacl PRIVATE
+    tweetnacl/native
+    tweetnacl/jni
+)
+
+target_link_libraries(tweetnacl log)
