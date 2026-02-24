@@ -69,7 +69,25 @@ public class SyncWorker extends Worker {
 
     @NonNull
     @Override
+    public ForegroundInfo getForegroundInfo() {
+        return buildForegroundInfo("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
+    }
+
+    private ForegroundInfo buildForegroundInfo(String title, String text, int notificationId, int priority) {
+        Notification notif = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
+                .setSmallIcon(R.drawable.notification_background)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setOngoing(true)
+                .setPriority(priority)
+                .build();
+        return new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+    }
+
+    @NonNull
+    @Override
     public Result doWork() {
+        setForegroundAsync(getForegroundInfo());
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
@@ -201,7 +219,6 @@ public class SyncWorker extends Worker {
         // notificationId is a unique int for each notification that you must define.
         Notification notif = builder.build();
         mgr.notify(notificationId, notif);
-        if (AppLifecycleObserver.inForeground.get())
-            setForegroundAsync(new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
+        setForegroundAsync(new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
     }
 }
