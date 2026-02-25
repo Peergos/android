@@ -19,10 +19,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.storage.StorageManager;
-import android.provider.DocumentsContract;
 import android.util.Size;
 import android.view.ViewGroup;
 import android.webkit.DownloadListener;
+import android.webkit.JavascriptInterface;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.ValueCallback;
@@ -44,6 +44,7 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.documentfile.provider.DocumentFile;
 import androidx.lifecycle.ProcessLifecycleOwner;
 import androidx.work.Constraints;
 import androidx.work.Data;
@@ -71,8 +72,10 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -145,6 +148,7 @@ public class MainActivity extends AppCompatActivity {
     CoreNode core;
     ActivityResultLauncher requestPermissions;
     CompletableFuture<String> chosenHostDir;
+    Map<String, String> relPathsForUpload = new HashMap<>();
     CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
     ServiceWorkerClient serviceWorker;
@@ -153,6 +157,7 @@ public class MainActivity extends AppCompatActivity {
     // for handling file upload, set a static value, any number you like
     // this value will be used by WebChromeClient during file upload
     private static final int file_chooser_activity_code = 1;
+    private static final int dir_chooser_activity_code = 2;
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
     private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
@@ -171,6 +176,18 @@ public class MainActivity extends AppCompatActivity {
 //            intent.putExtra("android.provider.extra.INITIAL_URI", uri);
         startActivityForResult(intent, REQUEST_ACTION_OPEN_DOCUMENT_TREE);
         return res;
+    }
+
+    private boolean wantsDirectory = false; // flag set by JS
+
+    @JavascriptInterface
+    public void notifyDirectoryRequest() {
+        wantsDirectory = true;
+    }
+
+    @JavascriptInterface
+    public String getPath(Object file) {
+//        return relPathsForUpload.get(file);
     }
 
     @Override
@@ -229,6 +246,8 @@ public class MainActivity extends AppCompatActivity {
 
         // handling file upload mechanism
         webView.setWebChromeClient(new UploadHandler());
+
+        webView.addJavascriptInterface(this, "Android");
 
         ServiceWorkerController swController = ServiceWorkerController.getInstance();
         serviceWorker = new ServiceWorkerClient() {
@@ -363,6 +382,15 @@ public class MainActivity extends AppCompatActivity {
         @SuppressLint("NewApi")
         @Override
         public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> valueCallback, FileChooserParams fileChooserParams) {
+            // Save the callback for handling the selected file
+            mUploadMessageArr = valueCallback;
+
+            if (wantsDirectory) {
+                wantsDirectory = false;
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                ((Activity) webView.getContext()).startActivityForResult(intent, dir_chooser_activity_code);
+                return true;
+            }
 
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -374,9 +402,6 @@ public class MainActivity extends AppCompatActivity {
 
             Intent chooserIntent = Intent.createChooser(intent, "Choose file(s)");
             ((Activity) webView.getContext()).startActivityForResult(chooserIntent, file_chooser_activity_code);
-
-            // Save the callback for handling the selected file
-            mUploadMessageArr = valueCallback;
             return true;
         }
 
@@ -451,6 +476,25 @@ public class MainActivity extends AppCompatActivity {
                 mUploadMessageArr = null;
                 Toast.makeText(MainActivity.this, "Error getting file", Toast.LENGTH_LONG).show();
             }
+        } else if (requestCode == dir_chooser_activity_code) {
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                Uri treeUri = data.getData();
+
+                // Recursively collect every file inside folder
+                List<Uri> fileUris = getAllFilesInDirectory(treeUri);
+
+                if (mUploadMessageArr != null) {
+                    mUploadMessageArr.onReceiveValue(fileUris.toArray(new Uri[0]));
+                    mUploadMessageArr = null;
+                }
+
+            } else {
+                if (mUploadMessageArr != null) {
+                    mUploadMessageArr.onReceiveValue(null);
+                    mUploadMessageArr = null;
+                }
+                Toast.makeText(this, "Folder selection canceled", Toast.LENGTH_SHORT).show();
+            }
         } else if (requestCode == REQUEST_ACTION_OPEN_DOCUMENT_TREE) {
             System.out.println("Got FOLDER ACCESS");
             if (data != null) {
@@ -460,6 +504,37 @@ public class MainActivity extends AppCompatActivity {
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 // Perform operations on the document using its URI.
                 chosenHostDir.complete(uri.toString());
+            }
+        }
+    }
+
+    private List<Uri> getAllFilesInDirectory(Uri treeUri) {
+        List<Uri> result = new ArrayList<>();
+
+        DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
+        if (root == null || !root.isDirectory()) {
+            return result;
+        }
+
+        traverseDirectory(root, root.getName(), result);
+        return result;
+    }
+
+    private void traverseDirectory(DocumentFile dir, String relativePath, List<Uri> result) {
+        for (DocumentFile file : dir.listFiles()) {
+
+            if (file.isDirectory()) {
+                traverseDirectory(file, relativePath + "/" + file.getName(), result);
+            }
+            else if (file.isFile() && file.canRead()) {
+                String key = file.getUri().toString();
+                if (relPathsForUpload.containsKey(key))
+                    throw new IllegalStateException("Duplicate filename in subtree: " + file.getName());
+                relPathsForUpload.put(key, relativePath + "/" + file.getName());
+                result.add(file.getUri().buildUpon()
+                        .query("?path=" + relativePath + "/" + file.getName()) // e.g. ChosenFolder/sub1/file.txt
+//                        .fragment(relativePath + "/" + file.getName()) // e.g. ChosenFolder/sub1/file.txt
+                        .build());
             }
         }
     }
