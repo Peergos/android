@@ -75,7 +75,6 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -148,7 +147,7 @@ public class MainActivity extends AppCompatActivity {
     CoreNode core;
     ActivityResultLauncher requestPermissions;
     CompletableFuture<String> chosenHostDir;
-    Map<String, String> relPathsForUpload = new HashMap<>();
+    String currentUploadSession = null;
     CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
     ServiceWorkerClient serviceWorker;
@@ -185,10 +184,6 @@ public class MainActivity extends AppCompatActivity {
         wantsDirectory = true;
     }
 
-    @JavascriptInterface
-    public String getPath(Object file) {
-//        return relPathsForUpload.get(file);
-    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -510,6 +505,9 @@ public class MainActivity extends AppCompatActivity {
 
     private List<Uri> getAllFilesInDirectory(Uri treeUri) {
         List<Uri> result = new ArrayList<>();
+        if (currentUploadSession != null)
+            UploadFileProvider.clearSession(currentUploadSession);
+        currentUploadSession = UploadFileProvider.startSession();
 
         DocumentFile root = DocumentFile.fromTreeUri(this, treeUri);
         if (root == null || !root.isDirectory()) {
@@ -522,19 +520,12 @@ public class MainActivity extends AppCompatActivity {
 
     private void traverseDirectory(DocumentFile dir, String relativePath, List<Uri> result) {
         for (DocumentFile file : dir.listFiles()) {
-
             if (file.isDirectory()) {
                 traverseDirectory(file, relativePath + "/" + file.getName(), result);
-            }
-            else if (file.isFile() && file.canRead()) {
-                String key = file.getUri().toString();
-                if (relPathsForUpload.containsKey(key))
-                    throw new IllegalStateException("Duplicate filename in subtree: " + file.getName());
-                relPathsForUpload.put(key, relativePath + "/" + file.getName());
-                result.add(file.getUri().buildUpon()
-                        .query("?path=" + relativePath + "/" + file.getName()) // e.g. ChosenFolder/sub1/file.txt
-//                        .fragment(relativePath + "/" + file.getName()) // e.g. ChosenFolder/sub1/file.txt
-                        .build());
+            } else if (file.isFile() && file.canRead()) {
+                String relPath = relativePath + "/" + file.getName();
+                Uri virtualUri = UploadFileProvider.addFile(currentUploadSession, file.getUri(), relPath);
+                result.add(virtualUri);
             }
         }
     }
