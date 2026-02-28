@@ -152,8 +152,7 @@ public class SyncWorker extends Worker {
                             if (e != null) {
                                 Throwable cause = getCause(e);
                                 if (!(cause instanceof UnknownHostException)) {
-                                    showNotification("Sync error", cause.getMessage(), MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
-                                    status.setError(e.getMessage());
+                                    status.setError(cause.getMessage());
                                 }
                             }
                         }, network, crypto);
