@@ -81,6 +81,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -719,6 +720,7 @@ public class MainActivity extends AppCompatActivity {
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,
                     connectionBacklog, handlerPoolSize);
+            ForkJoinPool.commonPool().submit(syncer::runNow);
         } catch (IOException | URISyntaxException e) {
             throw new RuntimeException(e);
         }
