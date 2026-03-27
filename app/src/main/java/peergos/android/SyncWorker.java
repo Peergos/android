@@ -42,7 +42,6 @@ import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
 import peergos.shared.Crypto;
-import peergos.shared.CryptreeCache;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
 import peergos.shared.corenode.CoreNode;
@@ -52,10 +51,9 @@ import peergos.shared.mutable.CachingPointers;
 import peergos.shared.mutable.HttpMutablePointers;
 import peergos.shared.mutable.MutablePointers;
 import peergos.shared.storage.ContentAddressedStorage;
+import peergos.shared.storage.RetryStorage;
 import peergos.shared.storage.UnauthedCachingStorage;
 import peergos.shared.user.HttpPoster;
-import peergos.shared.user.MutableTreeImpl;
-import peergos.shared.user.WriteSynchronizer;
 
 public class SyncWorker extends Worker {
     public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
@@ -125,11 +123,9 @@ public class SyncWorker extends Worker {
 
                 MutablePointers mutable = new CachingPointers(new HttpMutablePointers(poster, poster), 5_000);
 
-                WriteSynchronizer synchronizer = new WriteSynchronizer(mutable, storage, crypto.hasher);
-                MutableTreeImpl tree = new MutableTreeImpl(mutable, storage, crypto.hasher, synchronizer);
-                NetworkAccess network = new NetworkAccess(core, null, null, storage, null, Optional.empty(),
-                        mutable, tree, synchronizer, null, null, null, crypto.hasher,
-                        Collections.emptyList(), new CryptreeCache(50), false);
+                NetworkAccess network = NetworkAccess.buildBuffered(new RetryStorage(storage, 5), null, core, null,
+                        mutable, 5_000, null, null, null, null,
+                        crypto.hasher, Collections.emptyList(), false);
                 if (syncConfig.links.isEmpty()) {
                     System.out.println("No sync args");
                     return Result.success();
