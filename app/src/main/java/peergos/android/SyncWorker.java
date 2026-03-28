@@ -118,7 +118,7 @@ public class SyncWorker extends Worker {
                 OfflineCorenode core = new OfflineCorenode(directCore, new JdbcPkiCache(Builder.getDBConnector(args, "pki-cache-sql-file"), Builder.getSqlCommands(args)), online);
                 ContentAddressedStorage s3 = NetworkAccess.buildDirectS3Blockstore(localDht, core, poster, true, crypto.hasher).join();
                 FileBlockCache blockCache = new FileBlockCache(peergosDir.resolve(Paths.get("blocks", "cache")),
-                        10 * 1024 * 1024 * 1024L);
+                        MainActivity.MAX_BLOCK_CACHE_SIZE);
                 ContentAddressedStorage storage = new UnauthedCachingStorage(s3, blockCache, crypto.hasher);
 
                 MutablePointers mutable = new CachingPointers(new HttpMutablePointers(poster, poster), 5_000);

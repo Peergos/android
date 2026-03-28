@@ -138,6 +138,7 @@ import peergos.shared.util.Either;
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
+    public static final long MAX_BLOCK_CACHE_SIZE = 1 * 1024 * 1024 * 1024L;
     public static final String SYNC_CHANNEL_ID = "sync-updates";
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
@@ -634,7 +635,7 @@ public class MainActivity extends AppCompatActivity {
             HttpInstanceAdmin admin = new HttpInstanceAdmin(poster);
 
             FileBlockCache blockCache = new FileBlockCache(a.getPeergosDir().resolve(Paths.get("blocks", "cache")),
-                    10 * 1024 * 1024 * 1024L);
+                    MAX_BLOCK_CACHE_SIZE);
             ContentAddressedStorage locallyCachedStorage = new UnauthedCachingStorage(s3, blockCache, crypto.hasher);
             DirectOnlyStorage withoutS3 = new DirectOnlyStorage(locallyCachedStorage);
 
