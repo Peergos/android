@@ -272,11 +272,12 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
-            startServer(PORT);
+            SyncRunner syncer = startServer(PORT);
             MainActivity.this.runOnUiThread(() -> {
                 webView.loadUrl("http://localhost:" + PORT);
                 progressDialog.hide();
             });
+            ForkJoinPool.commonPool().submit(syncer::runNow);
         }).start();
     }
 
@@ -586,7 +587,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
     
-    public boolean startServer(int port) {
+    public SyncRunner startServer(int port) {
         File privateStorage = this.getFilesDir();
         Path peergosDir = Paths.get(privateStorage.getAbsolutePath());
         System.out.println("Peergos using private storage dir: " + peergosDir);
@@ -617,7 +618,7 @@ public class MainActivity extends AppCompatActivity {
                 alreadyRunning = true;
             } catch (Exception e){}
             if (alreadyRunning)
-                return true;
+                return null;
 
             // now start the server
             URL target = new URL(a.getArg("peergos-url", "https://peergos.net"));
@@ -721,10 +722,10 @@ public class MainActivity extends AppCompatActivity {
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,
                     connectionBacklog, handlerPoolSize);
-            ForkJoinPool.commonPool().submit(syncer::runNow);
+
+            return syncer;
         } catch (IOException | URISyntaxException e) {
             throw new RuntimeException(e);
         }
-        return true;
     }
 }
