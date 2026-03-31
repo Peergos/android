@@ -10,8 +10,8 @@ android {
         applicationId = "peergos.android"
         minSdk = 30
         targetSdk = 35
-        versionCode = 39
-        versionName = "1.22.1"
+        versionCode = 40
+        versionName = "1.22.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
@@ -58,6 +58,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("com.yubico.yubikit:android:3.0.1")
+    implementation("com.yubico.yubikit:fido:3.0.1")
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

@@ -33,6 +33,24 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import androidx.appcompat.app.AlertDialog;
+
+import com.yubico.yubikit.android.YubiKitManager;
+import com.yubico.yubikit.android.transport.nfc.NfcConfiguration;
+import com.yubico.yubikit.android.transport.nfc.NfcNotAvailable;
+import com.yubico.yubikit.android.transport.usb.UsbConfiguration;
+import com.yubico.yubikit.android.transport.usb.DeviceFilter;
+import com.yubico.yubikit.android.transport.usb.UsbYubiKeyDevice;
+import com.yubico.yubikit.core.YubiKeyDevice;
+import com.yubico.yubikit.core.application.CommandException;
+import com.yubico.yubikit.core.fido.FidoConnection;
+import com.yubico.yubikit.core.smartcard.SmartCardConnection;
+import com.yubico.yubikit.fido.Cbor;
+import com.yubico.yubikit.fido.ctap.Ctap2Session;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
@@ -143,6 +161,12 @@ public class MainActivity extends AppCompatActivity {
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
     WebView webView, cardDetails;
+    YubiKitManager yubiKitManager;
+    AlertDialog fido2Dialog;
+    volatile int pendingCallbackId = -1;
+    interface Fido2Op { void run(Ctap2Session ctap2) throws Exception; }
+    volatile Fido2Op pendingOp = null;
+    volatile String webauthnDefaultRpId = "localhost"; // updated when server starts
     Crypto crypto;
     HttpPoster poster;
     ContentAddressedStorage localDht;
@@ -270,6 +294,9 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
 
+        yubiKitManager = new YubiKitManager(this);
+        yubiKitManager.startUsbDiscovery(new UsbConfiguration().setDeviceFilter(new DeviceFilter()), this::onYubiKeyDevice);
+
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
             SyncRunner syncer = startServer(PORT);
@@ -315,6 +342,9 @@ public class MainActivity extends AppCompatActivity {
 //            super.onPageFinished(view, url);
             // hide the progress bar once the page has loaded
             progressDialog.dismiss();
+            if (url.startsWith("http://localhost:")) {
+                injectWebAuthnPolyfill();
+            }
         }
 
         @Override
@@ -556,6 +586,342 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (pendingOp != null) {
+            try {
+                yubiKitManager.startNfcDiscovery(new NfcConfiguration(), this, this::onYubiKeyDevice);
+            } catch (NfcNotAvailable e) { /* NFC unavailable, USB only */ }
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        yubiKitManager.stopNfcDiscovery(this);
+    }
+
+    // ---- WebAuthn / YubiKey bridge ----
+
+    private void injectWebAuthnPolyfill() {
+        try {
+            java.io.InputStream is = getAssets().open("webauthn_polyfill.js");
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+            is.close();
+            webView.evaluateJavascript(baos.toString("UTF-8"), null);
+        } catch (IOException e) {
+            System.err.println("Failed to inject WebAuthn polyfill: " + e);
+        }
+    }
+
+    private String rpIdToOrigin(String rpId) {
+        if (rpId.equals("localhost")) return "http://localhost:" + PORT;
+        return "https://" + rpId;
+    }
+
+    @JavascriptInterface
+    public void webauthnCreate(int callbackId, String optionsJson) {
+        try {
+            JSONObject pk = new JSONObject(optionsJson).getJSONObject("publicKey");
+
+            // Build clientDataJSON with the correct origin for server-side validation
+            JSONObject rpJson = pk.getJSONObject("rp");
+            String rpId = rpJson.optString("id", webauthnDefaultRpId);
+            String origin = rpIdToOrigin(rpId);
+
+            byte[] challengeBytes = extractBytes(pk.get("challenge"));
+            String clientDataJson = "{\"type\":\"webauthn.create\",\"challenge\":\""
+                    + base64url(challengeBytes) + "\",\"origin\":\"" + origin
+                    + "\",\"crossOrigin\":false}";
+            byte[] clientDataHash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(clientDataJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+            // Build CTAP2 rp / user / pubKeyCredParams maps
+            Map<String, Object> rp = new java.util.LinkedHashMap<>();
+            rp.put("id", rpId);
+            rp.put("name", rpJson.getString("name"));
+
+            JSONObject userJson = pk.getJSONObject("user");
+            Map<String, Object> user = new java.util.LinkedHashMap<>();
+            user.put("id", extractBytes(userJson.get("id")));
+            user.put("name", userJson.getString("name"));
+            user.put("displayName", userJson.getString("displayName"));
+
+            List<Map<String, ?>> credParams = new ArrayList<>();
+            JSONArray algs = pk.getJSONArray("pubKeyCredParams");
+            for (int i = 0; i < algs.length(); i++) {
+                JSONObject p = algs.getJSONObject(i);
+                Map<String, Object> m = new java.util.LinkedHashMap<>();
+                m.put("type", p.getString("type"));
+                m.put("alg", p.getInt("alg"));
+                credParams.add(m);
+            }
+
+            System.out.println("FIDO2: webauthnCreate rpId=" + rpId + " origin=" + origin + " clientDataJson=" + clientDataJson);
+            pendingCallbackId = callbackId;
+            pendingOp = ctap2 -> {
+                Ctap2Session.CredentialData cred = ctap2.makeCredential(
+                        clientDataHash, rp, user, credParams,
+                        null, null, null, null, null, null, null);
+
+                byte[] authData = cred.getAuthenticatorData();
+                byte[] credId = extractCredentialId(authData);
+
+                // Server only supports NoneAttestationStatement — strip attestation,
+                // keep authData (which contains the public key).
+                System.out.println("FIDO2: fmt=" + cred.getFormat() + " stripping to none attestation");
+                Map<String, Object> attObj = new java.util.LinkedHashMap<>();
+                attObj.put("fmt", "none");
+                attObj.put("authData", authData);
+                attObj.put("attStmt", new java.util.LinkedHashMap<String, Object>());
+                byte[] attestationObject = Cbor.encode(attObj);
+
+                JSONObject resp = new JSONObject();
+                String credIdB64 = base64url(credId);
+                resp.put("id", credIdB64);
+                resp.put("rawId", credIdB64);
+                resp.put("type", "public-key");
+                JSONObject r = new JSONObject();
+                r.put("attestationObject", base64url(attestationObject));
+                r.put("clientDataJSON", base64url(
+                        clientDataJson.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                resp.put("response", r);
+                webAuthnCallback(callbackId, resp.toString());
+            };
+            runOnUiThread(() -> showFido2Dialog(callbackId, "Tap or connect your security key to register"));
+        } catch (Exception e) {
+            webAuthnError(callbackId, e.getMessage());
+        }
+    }
+
+    @JavascriptInterface
+    public void webauthnGet(int callbackId, String optionsJson) {
+        try {
+            JSONObject pk = new JSONObject(optionsJson).getJSONObject("publicKey");
+
+            String rpId = pk.optString("rpId", webauthnDefaultRpId);
+            String origin = rpIdToOrigin(rpId);
+
+            byte[] challengeBytes = extractBytes(pk.get("challenge"));
+            String clientDataJson = "{\"type\":\"webauthn.get\",\"challenge\":\""
+                    + base64url(challengeBytes) + "\",\"origin\":\"" + origin
+                    + "\",\"crossOrigin\":false}";
+            byte[] clientDataHash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(clientDataJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+            List<Map<String, ?>> allowList = new ArrayList<>();
+            if (pk.has("allowCredentials")) {
+                JSONArray allow = pk.getJSONArray("allowCredentials");
+                for (int i = 0; i < allow.length(); i++) {
+                    JSONObject c = allow.getJSONObject(i);
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("type", c.getString("type"));
+                    m.put("id", extractBytes(c.get("id")));
+                    allowList.add(m);
+                }
+            }
+
+            pendingCallbackId = callbackId;
+            pendingOp = ctap2 -> {
+                List<Ctap2Session.AssertionData> assertions = ctap2.getAssertions(
+                        rpId, clientDataHash,
+                        allowList.isEmpty() ? null : allowList,
+                        null, null, null, null, null);
+
+                Ctap2Session.AssertionData assertion = assertions.get(0);
+                byte[] authData = assertion.getAuthenticatorData();
+                byte[] signature = assertion.getSignature();
+
+                // Credential ID: from response if present, else from allowList
+                byte[] credId = null;
+                Map<String, ?> credDesc = assertion.getCredential();
+                if (credDesc != null) credId = (byte[]) credDesc.get("id");
+                if (credId == null && !allowList.isEmpty())
+                    credId = (byte[]) allowList.get(0).get("id");
+
+                byte[] userHandle = null;
+                Map<String, ?> userMap = assertion.getUser();
+                if (userMap != null) userHandle = (byte[]) userMap.get("id");
+
+                JSONObject resp = new JSONObject();
+                String credIdB64 = base64url(credId);
+                resp.put("id", credIdB64);
+                resp.put("rawId", credIdB64);
+                resp.put("type", "public-key");
+                JSONObject r = new JSONObject();
+                r.put("clientDataJSON", base64url(
+                        clientDataJson.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                r.put("authenticatorData", base64url(authData));
+                r.put("signature", base64url(signature));
+                if (userHandle != null) r.put("userHandle", base64url(userHandle));
+                resp.put("response", r);
+                webAuthnCallback(callbackId, resp.toString());
+            };
+            runOnUiThread(() -> showFido2Dialog(callbackId, "Tap or connect your security key to authenticate"));
+        } catch (Exception e) {
+            webAuthnError(callbackId, e.getMessage());
+        }
+    }
+
+    private void showFido2Dialog(int callbackId, String message) {
+        fido2Dialog = new AlertDialog.Builder(this)
+                .setTitle("Security Key")
+                .setMessage(message)
+                .setNegativeButton("Cancel", (d, w) -> {
+                    pendingOp = null;
+                    yubiKitManager.stopNfcDiscovery(this);
+                    yubiKitManager.stopUsbDiscovery();
+                    webAuthnError(callbackId, "User cancelled");
+                })
+                .setCancelable(false)
+                .show();
+        System.out.println("FIDO2: showing dialog, starting NFC/USB discovery");
+        try {
+            yubiKitManager.startNfcDiscovery(new NfcConfiguration(), this, this::onYubiKeyDevice);
+        } catch (NfcNotAvailable e) {
+            System.out.println("FIDO2: NFC not available: " + e);
+        }
+        // Restart USB discovery for newly-connected devices
+        yubiKitManager.stopUsbDiscovery();
+        yubiKitManager.startUsbDiscovery(new UsbConfiguration().setDeviceFilter(new DeviceFilter()), this::onYubiKeyDevice);
+        System.out.println("FIDO2: USB discovery (re)started");
+
+        // YubiKit won't re-fire for an already-connected device after a discovery restart,
+        // so enumerate USB devices directly and trigger the callback ourselves.
+        android.hardware.usb.UsbManager usbMgr =
+                (android.hardware.usb.UsbManager) getSystemService(Context.USB_SERVICE);
+        for (android.hardware.usb.UsbDevice usbDev : usbMgr.getDeviceList().values()) {
+            System.out.println("FIDO2: found USB device vid=0x" + Integer.toHexString(usbDev.getVendorId()) + " pid=0x" + Integer.toHexString(usbDev.getProductId()));
+            UsbYubiKeyDevice yubiDev = new UsbYubiKeyDevice(usbMgr, usbDev);
+            if (yubiDev.supportsConnection(FidoConnection.class) || yubiDev.supportsConnection(SmartCardConnection.class)) {
+                System.out.println("FIDO2: device supports FIDO/SmartCard connection");
+                if (yubiDev.hasPermission()) {
+                    System.out.println("FIDO2: device has permission, triggering directly");
+                    onYubiKeyDevice(yubiDev);
+                } else {
+                    System.out.println("FIDO2: device found but no permission yet, USB discovery will request it");
+                }
+            }
+        }
+    }
+
+    private void onYubiKeyDevice(YubiKeyDevice device) {
+        System.out.println("FIDO2: onYubiKeyDevice called, device=" + device + ", pendingOp=" + pendingOp);
+        Fido2Op op = pendingOp;
+        if (op == null) {
+            System.out.println("FIDO2: no pending op, ignoring device");
+            return;
+        }
+        pendingOp = null;
+        runOnUiThread(() -> {
+            if (fido2Dialog != null) fido2Dialog.setMessage("Processing...");
+        });
+        boolean isUsb = device instanceof UsbYubiKeyDevice;
+        System.out.println("FIDO2: device is USB=" + isUsb + ", requesting connection");
+        if (isUsb) {
+            device.requestConnection(FidoConnection.class, result -> {
+                System.out.println("FIDO2: FidoConnection result, success=" + result.isSuccess());
+                try {
+                    FidoConnection conn = result.getValue();
+                    System.out.println("FIDO2: got FidoConnection, opening Ctap2Session");
+                    try (Ctap2Session ctap2 = new Ctap2Session(conn)) {
+                        op.run(ctap2);
+                    }
+                    System.out.println("FIDO2: op completed successfully");
+                } catch (Exception e) {
+                    System.out.println("FIDO2: op failed: " + e);
+                    e.printStackTrace();
+                    webAuthnError(pendingCallbackId, e.getMessage() != null ? e.getMessage() : e.toString());
+                } finally {
+                    runOnUiThread(() -> {
+                        if (fido2Dialog != null) { fido2Dialog.dismiss(); fido2Dialog = null; }
+                    });
+                    yubiKitManager.stopNfcDiscovery(this);
+                    yubiKitManager.stopUsbDiscovery();
+                }
+            });
+        } else {
+            device.requestConnection(SmartCardConnection.class, result -> {
+                System.out.println("FIDO2: SmartCardConnection result, success=" + result.isSuccess());
+                try {
+                    SmartCardConnection conn = result.getValue();
+                    System.out.println("FIDO2: got SmartCardConnection, opening Ctap2Session");
+                    try (Ctap2Session ctap2 = new Ctap2Session(conn)) {
+                        op.run(ctap2);
+                    }
+                    System.out.println("FIDO2: op completed successfully");
+                } catch (Exception e) {
+                    System.out.println("FIDO2: op failed: " + e);
+                    e.printStackTrace();
+                    webAuthnError(pendingCallbackId, e.getMessage() != null ? e.getMessage() : e.toString());
+                } finally {
+                    runOnUiThread(() -> {
+                        if (fido2Dialog != null) { fido2Dialog.dismiss(); fido2Dialog = null; }
+                    });
+                    yubiKitManager.stopNfcDiscovery(this);
+                    yubiKitManager.stopUsbDiscovery();
+                }
+            });
+        }
+    }
+
+    private void webAuthnCallback(int callbackId, String responseJson) {
+        String encoded = android.util.Base64.encodeToString(
+                responseJson.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                android.util.Base64.NO_WRAP);
+        webView.post(() -> webView.evaluateJavascript(
+                "window._webauthnSuccess(" + callbackId + ",'" + encoded + "')", null));
+    }
+
+    private void webAuthnError(int callbackId, String message) {
+        String safe = (message != null ? message : "Unknown error").replace("'", "\\'");
+        webView.post(() -> webView.evaluateJavascript(
+                "window._webauthnError(" + callbackId + ",'" + safe + "')", null));
+    }
+
+    private static byte[] extractCredentialId(byte[] authData) {
+        java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(authData);
+        buf.position(32); // rpIdHash
+        byte flags = buf.get();
+        buf.position(37); // skip signCount
+        if ((flags & 0x40) == 0) return null; // AT flag not set
+        buf.position(53); // skip aaguid
+        int len = ((buf.get() & 0xFF) << 8) | (buf.get() & 0xFF);
+        byte[] credId = new byte[len];
+        buf.get(credId);
+        return credId;
+    }
+
+    private static byte[] extractBytes(Object val) throws JSONException {
+        if (val instanceof JSONArray) {
+            JSONArray arr = (JSONArray) val;
+            byte[] bytes = new byte[arr.length()];
+            for (int i = 0; i < arr.length(); i++) bytes[i] = (byte) arr.getInt(i);
+            return bytes;
+        }
+        if (val instanceof JSONObject) {
+            JSONObject obj = (JSONObject) val;
+            if ("ArrayBuffer".equals(obj.optString("_type"))) {
+                JSONArray data = obj.getJSONArray("data");
+                byte[] bytes = new byte[data.length()];
+                for (int i = 0; i < data.length(); i++) bytes[i] = (byte) data.getInt(i);
+                return bytes;
+            }
+        }
+        throw new JSONException("Cannot extract bytes from: " + val);
+    }
+
+    private static String base64url(byte[] bytes) {
+        return android.util.Base64.encodeToString(bytes,
+                android.util.Base64.URL_SAFE | android.util.Base64.NO_WRAP | android.util.Base64.NO_PADDING);
+    }
+
+    // ---- end WebAuthn bridge ----
+
     public NetworkAccess buildLocalhostNetwork() {
         return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false);
     }
@@ -622,6 +988,7 @@ public class MainActivity extends AppCompatActivity {
 
             // now start the server
             URL target = new URL(a.getArg("peergos-url", "https://peergos.net"));
+            webauthnDefaultRpId = target.getHost();
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
             CoreNode core = NetworkAccess.buildDirectCorenode(poster);
