@@ -987,7 +987,8 @@ public class MainActivity extends AppCompatActivity {
                 return null;
 
             // now start the server
-            URL target = new URL(a.getArg("peergos-url", "https://peergos.net"));
+            String serverUrl = a.getArg("server-url", "https://peergos.net");
+            URL target = new URL(serverUrl);
             webauthnDefaultRpId = target.getHost();
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
@@ -1077,9 +1078,10 @@ public class MainActivity extends AppCompatActivity {
                     SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
                     SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldSyncConfigFile), false));
 
+            Optional<UserService.LocalAppProperties> localAppProps = Optional.of(new UserService.LocalAppProperties(peergosDir, serverUrl));
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))));
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps);
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
