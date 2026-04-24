@@ -156,7 +156,7 @@ import peergos.shared.util.Either;
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
-    public static final long MAX_BLOCK_CACHE_SIZE = 1 * 1024 * 1024 * 1024L;
+    public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
     public static final String SYNC_CHANNEL_ID = "sync-updates";
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
@@ -377,6 +377,8 @@ public class MainActivity extends AppCompatActivity {
                 File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
                 request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
                 DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                DownloadForegroundService.increment();
+                ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
                 dm.enqueue(request);
 
                 MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
@@ -398,6 +400,8 @@ public class MainActivity extends AppCompatActivity {
                 File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
                 request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
                 DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                DownloadForegroundService.increment();
+                ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
                 dm.enqueue(request);
 
                 MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
@@ -567,6 +571,10 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceive(Context context, Intent intent) {
             Toast.makeText(getApplicationContext(),"Downloading Complete",Toast.LENGTH_SHORT).show();
+            DownloadForegroundService.decrement();
+            Intent stopIntent = new Intent(context, DownloadForegroundService.class);
+            stopIntent.setAction(DownloadForegroundService.ACTION_STOP);
+            ContextCompat.startForegroundService(context, stopIntent);
         }
     };
 
