@@ -432,7 +432,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState) {
+    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState, long fileSize) {
         DocumentFile f = getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p));
         long size = f.length();
         int nCPUs = Runtime.getRuntime().availableProcessors();

@@ -18,5 +18,4 @@ zip -d app/libs/Peergos.jar org/sqlite/native/Linux-Musl/\*
 zip -d app/libs/Peergos.jar org/jline/nativ/\*
 zip -d app/libs/Peergos.jar jni/\*
 zip -d app/libs/Peergos.jar META-INF/native/\*
-zip -d app/libs/Peergos.jar META-INF/lib/osx_64/\*
-zip -d app/libs/Peergos.jar META-INF/lib/windows_64/\*
+zip -d app/libs/Peergos.jar native/\*
