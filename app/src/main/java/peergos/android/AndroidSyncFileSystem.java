@@ -271,7 +271,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
 
     @Override
     public AsyncReader getBytes(Path p, long fileOffset) throws IOException {
-        DocumentFile file = getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p));
+        DocumentFile file = getByPath(p).orElseThrow(() -> new FileNotFoundException("Absent file: " + p));
         InputStream fin = context.getContentResolver().openInputStream(file.getUri());
         fin.skip(fileOffset);
         return new AndroidAsyncReader(fin, () -> getInputStream(file));
