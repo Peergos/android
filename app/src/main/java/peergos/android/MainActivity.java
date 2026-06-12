@@ -42,7 +42,6 @@ import com.yubico.yubikit.android.transport.usb.UsbConfiguration;
 import com.yubico.yubikit.android.transport.usb.DeviceFilter;
 import com.yubico.yubikit.android.transport.usb.UsbYubiKeyDevice;
 import com.yubico.yubikit.core.YubiKeyDevice;
-import com.yubico.yubikit.core.application.CommandException;
 import com.yubico.yubikit.core.fido.FidoConnection;
 import com.yubico.yubikit.core.smartcard.SmartCardConnection;
 import com.yubico.yubikit.fido.Cbor;
@@ -1089,7 +1088,8 @@ public class MainActivity extends AppCompatActivity {
             Optional<UserService.LocalAppProperties> localAppProps = Optional.of(new UserService.LocalAppProperties(peergosDir, serverUrl));
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps);
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps,
+                    PeergosSession.mountHandler());
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
