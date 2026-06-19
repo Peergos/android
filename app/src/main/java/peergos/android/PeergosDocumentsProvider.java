@@ -153,16 +153,20 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         Session s = sessionOrThrow();
         FileWrapper fw = lookupOrThrow(documentId);
         long size = fw.getSize();
-        StorageManager sm = (StorageManager) getContext().getSystemService(Context.STORAGE_SERVICE);
+        Context appCtx = getContext().getApplicationContext();
+        StorageManager sm = (StorageManager) appCtx.getSystemService(Context.STORAGE_SERVICE);
         HandlerThread thread = new HandlerThread("PeergosProxyFd-" + Integer.toHexString(documentId.hashCode()));
         thread.start();
+        // Keep the process out of Doze for the lifetime of the FD; released in onRelease.
+        StreamingForegroundService.acquire(appCtx);
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_ONLY,
-                    new PeergosProxyCallback(fw, size, s, thread),
+                    new PeergosProxyCallback(fw, size, s, thread, appCtx),
                     new Handler(thread.getLooper()));
         } catch (IOException e) {
             thread.quitSafely();
+            StreamingForegroundService.release(appCtx);
             throw rethrowAsFnf("openProxyFileDescriptor " + documentId, e);
         }
     }
@@ -383,14 +387,16 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final long size;
         private final Session s;
         private final HandlerThread thread;
+        private final Context appCtx;
         private AsyncReader reader;
         private long pos;
 
-        PeergosProxyCallback(FileWrapper fw, long size, Session s, HandlerThread thread) {
+        PeergosProxyCallback(FileWrapper fw, long size, Session s, HandlerThread thread, Context appCtx) {
             this.fw = fw;
             this.size = size;
             this.s = s;
             this.thread = thread;
+            this.appCtx = appCtx;
         }
 
         @Override
@@ -434,6 +440,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             try { if (reader != null) reader.close(); } catch (Exception ignored) {}
             reader = null;
             thread.quitSafely();
+            StreamingForegroundService.release(appCtx);
         }
     }
 
