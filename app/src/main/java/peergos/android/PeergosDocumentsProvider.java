@@ -1,16 +1,23 @@
 package peergos.android;
 
+import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.graphics.Point;
 import android.net.Uri;
 import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.ParcelFileDescriptor;
+import android.os.ProxyFileDescriptorCallback;
+import android.os.storage.StorageManager;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 import android.provider.DocumentsContract.Root;
 import android.provider.DocumentsProvider;
+import android.system.ErrnoException;
+import android.system.OsConstants;
 import android.util.Log;
 
 import java.io.File;
@@ -140,12 +147,24 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
     private ParcelFileDescriptor openForRead(String documentId, CancellationSignal signal)
             throws FileNotFoundException {
+        // Hand back a seekable FD via StorageManager.openProxyFileDescriptor so image and
+        // video viewers (BitmapFactory header peek, MP4 moov-atom lookup) can lseek. A
+        // pipe is non-seekable and silently breaks both — that's the blank-screen path.
         Session s = sessionOrThrow();
         FileWrapper fw = lookupOrThrow(documentId);
         long size = fw.getSize();
-        ParcelFileDescriptor[] pipe = createPipeOrThrow();
-        streamingPool.execute(() -> streamToPipe(fw, size, pipe[1], s, signal));
-        return pipe[0];
+        StorageManager sm = (StorageManager) getContext().getSystemService(Context.STORAGE_SERVICE);
+        HandlerThread thread = new HandlerThread("PeergosProxyFd-" + Integer.toHexString(documentId.hashCode()));
+        thread.start();
+        try {
+            return sm.openProxyFileDescriptor(
+                    ParcelFileDescriptor.MODE_READ_ONLY,
+                    new PeergosProxyCallback(fw, size, s, thread),
+                    new Handler(thread.getLooper()));
+        } catch (IOException e) {
+            thread.quitSafely();
+            throw rethrowAsFnf("openProxyFileDescriptor " + documentId, e);
+        }
     }
 
     private ParcelFileDescriptor openForWrite(String documentId, CancellationSignal signal)
@@ -355,23 +374,66 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         return new DocumentsContract.Path(parentDocumentId == null ? rootId : null, chain);
     }
 
-    private void streamToPipe(FileWrapper fw, long size, ParcelFileDescriptor writeFd,
-                              Session s, CancellationSignal signal) {
-        try (OutputStream out = new ParcelFileDescriptor.AutoCloseOutputStream(writeFd);
-             AsyncReader reader = fw.getInputStream(s.network, s.crypto, size, p -> {}).join()) {
-            byte[] buf = new byte[64 * 1024];
-            long remaining = size;
-            while (remaining > 0 && (signal == null || !signal.isCanceled())) {
-                int toRead = (int) Math.min(buf.length, remaining);
-                int n = reader.readIntoArray(buf, 0, toRead).join();
-                if (n <= 0) break;
-                out.write(buf, 0, n);
-                remaining -= n;
+    /** Backs a seekable {@link ParcelFileDescriptor} with a Peergos {@link AsyncReader}.
+     *  All callbacks are serialised on the Handler thread we hand to
+     *  {@code openProxyFileDescriptor}, so the cached reader + position is single-threaded
+     *  and we avoid a seek when reads are sequential — the common video / image case. */
+    private static final class PeergosProxyCallback extends ProxyFileDescriptorCallback {
+        private final FileWrapper fw;
+        private final long size;
+        private final Session s;
+        private final HandlerThread thread;
+        private AsyncReader reader;
+        private long pos;
+
+        PeergosProxyCallback(FileWrapper fw, long size, Session s, HandlerThread thread) {
+            this.fw = fw;
+            this.size = size;
+            this.s = s;
+            this.thread = thread;
+        }
+
+        @Override
+        public long onGetSize() {
+            return size;
+        }
+
+        @Override
+        public int onRead(long offset, int len, byte[] data) throws ErrnoException {
+            if (offset >= size) return 0;
+            int toRead = (int) Math.min(len, size - offset);
+            try {
+                if (reader == null) {
+                    reader = fw.getInputStream(s.network, s.crypto, size, p -> {}).join();
+                    pos = 0;
+                }
+                if (offset != pos) {
+                    reader = reader.seek(offset).join();
+                    pos = offset;
+                }
+                int total = 0;
+                while (total < toRead) {
+                    int n = reader.readIntoArray(data, total, toRead - total).join();
+                    if (n <= 0) break;
+                    total += n;
+                    pos += n;
+                }
+                return total;
+            } catch (Exception e) {
+                Log.w(TAG, "proxy onRead failed at offset=" + offset + " len=" + len, e);
+                // Drop the stale reader so the next call re-opens from scratch.
+                try { if (reader != null) reader.close(); } catch (Exception ignored) {}
+                reader = null;
+                pos = 0;
+                throw new ErrnoException("onRead", OsConstants.EIO);
             }
-        } catch (IOException e) {
-            if (!isPipeClosed(e)) Log.w(TAG, "stream to pipe failed", e);
-        } catch (Exception e) {
-            Log.w(TAG, "stream to pipe failed", e);
+        }
+
+        @Override
+        public void onRelease() {
+            try { if (reader != null) reader.close(); } catch (Exception ignored) {}
+            reader = null;
+            thread.quitSafely();
         }
     }
 

@@ -8,9 +8,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.provider.DocumentsContract;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.media.ThumbnailUtils;
@@ -207,6 +209,38 @@ public class MainActivity extends AppCompatActivity {
     @JavascriptInterface
     public void notifyDirectoryRequest() {
         wantsDirectory = true;
+    }
+
+    /** Launch the system Files app rooted at the Peergos SAF DocumentsProvider so the
+     *  WebView's "Open in file explorer" button has somewhere meaningful to go on
+     *  Android (there's no filesystem mount path here — the mount is the SAF root). */
+    @JavascriptInterface
+    public void openMountInFiles() {
+        runOnUiThread(() -> {
+            String username = PeergosSession.context().map(c -> c.username).orElse(null);
+            if (username == null) {
+                Toast.makeText(this, "Sign in to open Peergos files", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Uri rootUri = DocumentsContract.buildRootUri(DocumentsProviderBackend.AUTHORITY, username);
+            // android.provider.action.BROWSE is the canonical way to open DocumentsUI
+            // at a specific root; ACTION_VIEW is the fallback for OEM file apps that
+            // don't register BROWSE.
+            Intent browse = new Intent("android.provider.action.BROWSE")
+                    .setDataAndType(rootUri, "vnd.android.document/root")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try {
+                startActivity(browse);
+            } catch (ActivityNotFoundException notFound) {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW)
+                            .setDataAndType(rootUri, "vnd.android.document/root")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                } catch (ActivityNotFoundException stillNotFound) {
+                    Toast.makeText(this, "No file explorer app installed", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
     }
 
 
