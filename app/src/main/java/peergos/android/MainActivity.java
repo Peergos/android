@@ -20,6 +20,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.content.ContentValues;
+import android.provider.MediaStore;
 import android.os.storage.StorageManager;
 import android.util.Size;
 import android.view.ViewGroup;
@@ -78,7 +80,9 @@ import org.peergos.util.Futures;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -121,6 +125,7 @@ import peergos.server.storage.auth.JdbcBatCave;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
+import peergos.server.util.Logging;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
@@ -214,6 +219,69 @@ public class MainActivity extends AppCompatActivity {
     /** Launch the system Files app rooted at the Peergos SAF DocumentsProvider so the
      *  WebView's "Open in file explorer" button has somewhere meaningful to go on
      *  Android (there's no filesystem mount path here — the mount is the SAF root). */
+    /** Bundle the rotated peergos.&lt;N&gt;.log files in PEERGOS_PATH (up to 10, written by
+     *  java.util.logging.FileHandler with pattern "peergos.%g.log") into a single text
+     *  file and drop it in the user's Downloads folder via MediaStore. */
+    @JavascriptInterface
+    public void downloadLogs() {
+        new Thread(() -> {
+            try {
+                File dir = getFilesDir();
+                File[] candidates = dir.listFiles((d, name) ->
+                        name.startsWith("peergos.") && name.endsWith(".log"));
+                if (candidates == null || candidates.length == 0) {
+                    runOnUiThread(() -> Toast.makeText(this, "No logs found", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                // FileHandler keeps the active file at generation 0 and increments older
+                // rotations, so sort highest-generation first to write oldest→newest.
+                List<File> ordered = new ArrayList<>(Arrays.asList(candidates));
+                ordered.sort((a, b) -> logGeneration(b.getName()) - logGeneration(a.getName()));
+                if (ordered.size() > 10)
+                    ordered = ordered.subList(0, 10);
+
+                String fileName = "peergos-logs-" + System.currentTimeMillis() + ".log";
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Could not create download file", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    byte[] buf = new byte[64 * 1024];
+                    for (File f : ordered) {
+                        out.write(("==== " + f.getName() + " ====\n")
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        try (FileInputStream in = new FileInputStream(f)) {
+                            int r;
+                            while ((r = in.read(buf)) > 0)
+                                out.write(buf, 0, r);
+                        }
+                        out.write('\n');
+                    }
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Logs saved to Downloads/" + fileName, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Failed to download logs: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    private static int logGeneration(String name) {
+        try {
+            int dot1 = name.indexOf('.') + 1;
+            int dot2 = name.indexOf('.', dot1);
+            return Integer.parseInt(name.substring(dot1, dot2));
+        } catch (Exception e) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
     @JavascriptInterface
     public void openMountInFiles() {
         runOnUiThread(() -> {
@@ -1129,6 +1197,7 @@ public class MainActivity extends AppCompatActivity {
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
             int connectionBacklog = 50;
             int handlerPoolSize = 4;
+            Logging.init(a);
             server.initAndStart(localAPIAddress, Arrays.asList(), Optional.empty(), Optional.empty(),
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,

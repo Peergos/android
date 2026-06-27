@@ -30,6 +30,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
@@ -41,6 +43,7 @@ import peergos.server.sync.DirectorySync;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
+import peergos.server.util.Logging;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
@@ -57,6 +60,7 @@ import peergos.shared.user.HttpPoster;
 
 public class SyncWorker extends Worker {
     public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
+    private static final Logger LOG = Logging.LOG();
 
     public static final Object lock = new Object();
     private final WorkerParameters params;
@@ -143,6 +147,7 @@ public class SyncWorker extends Worker {
                         status,
                         m -> {
                             status.setStatus(m);
+                            LOG.info(m);
                         },
                         e -> {
                             if (e != null) {
@@ -150,6 +155,7 @@ public class SyncWorker extends Worker {
                                 if (!(cause instanceof UnknownHostException)) {
                                     status.setError(cause.getMessage());
                                 }
+                                LOG.log(Level.WARNING, cause, cause::getMessage);
                             }
                         }, network, crypto);
             } catch (MalformedURLException e) {
@@ -163,6 +169,7 @@ public class SyncWorker extends Worker {
                     status.setError(msg);
                     showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
                 }
+                LOG.log(Level.WARNING, cause, cause::getMessage);
                 return Result.failure();
             } finally {
                 closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
