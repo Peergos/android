@@ -20,8 +20,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
 import android.content.ContentValues;
+import android.content.SharedPreferences;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.os.storage.StorageManager;
 import android.util.Size;
 import android.view.ViewGroup;
@@ -270,6 +273,33 @@ public class MainActivity extends AppCompatActivity {
                         "Failed to download logs: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
+    }
+
+    /** One-shot prompt on the user's first sync: ask them to whitelist Peergos in
+     *  battery optimisation so the system doesn't suspend background sync. */
+    private void maybePromptBatteryOptimization() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName()))
+            return;
+        SharedPreferences prefs = getSharedPreferences("peergos-prefs", MODE_PRIVATE);
+        if (prefs.getBoolean("battery-opt-dismissed", false))
+            return;
+        new AlertDialog.Builder(this)
+                .setTitle("Keep syncing in the background")
+                .setMessage("Android may pause Peergos while your screen is off, which can stop syncs from completing. " +
+                        "Allowing Peergos to ignore battery optimisation lets sync keep running until it finishes. " +
+                        "You can change this later in system settings.")
+                .setPositiveButton("Allow", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (ActivityNotFoundException notFound) {
+                        startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                    }
+                })
+                .setNegativeButton("Not now", (d, w) ->
+                        prefs.edit().putBoolean("battery-opt-dismissed", true).apply())
+                .show();
     }
 
     private static int logGeneration(String name) {
@@ -1153,11 +1183,17 @@ public class MainActivity extends AppCompatActivity {
 //                            .setExecutor(Executors.newFixedThreadPool(1))
 //                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
+            Path syncConfigPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
             SyncRunner syncer = new SyncRunner() {
                 private static final String periodicUuid = "fe64ee2f-a2a2-4dab-96d8-0aec9475541f";
 
                 @Override
                 public void start() {
+                    // start() is invoked by SyncConfigHandler after a pair has been
+                    // written to disk; a count of 1 means this is the first pair on
+                    // this install (or the first since the user removed everything).
+                    if (readPairCount() == 1)
+                        runOnUiThread(MainActivity.this::maybePromptBatteryOptimization);
                     runNow();
                     backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
                             .setConstraints(periodic)
@@ -1168,16 +1204,29 @@ public class MainActivity extends AppCompatActivity {
 
                 @Override
                 public void runNow() {
-                    backgroundWork.enqueue(new OneTimeWorkRequest.Builder(SyncWorker.class)
-                            .setConstraints(once)
-                            .setId(UUID.randomUUID())
-                            .setInputData(syncArgs)
-                            .build());
+                    // Hand the long-running drain to SyncService — the WebView click /
+                    // Activity callback that triggered this path counts as foreground
+                    // so the BG-FGS restriction doesn't apply.
+                    ContextCompat.startForegroundService(MainActivity.this,
+                            new Intent(MainActivity.this, SyncService.class));
                 }
 
                 @Override
                 public StatusHolder getStatusHolder() {
                     return SyncWorker.status;
+                }
+
+                private int readPairCount() {
+                    try {
+                        if (! syncConfigPath.toFile().exists())
+                            return 0;
+                        Map<String, Object> json = (Map<String, Object>) JSONParser.parse(
+                                new String(Files.readAllBytes(syncConfigPath)));
+                        List<?> pairs = (List<?>) json.get("pairs");
+                        return pairs == null ? 0 : pairs.size();
+                    } catch (IOException e) {
+                        return -1;
+                    }
                 }
             };
 

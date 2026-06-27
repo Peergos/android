@@ -1,21 +1,12 @@
 package peergos.android;
 
-import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
-
-import android.app.Notification;
 import android.content.Context;
-import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.ActivityCompat;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
-import androidx.work.Data;
-import androidx.work.ForegroundInfo;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -67,44 +58,28 @@ public class SyncWorker extends Worker {
     private static final Logger LOG = Logging.LOG();
 
     public static final Object lock = new Object();
-    private final WorkerParameters params;
     public SyncWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
         super(context, workerParams);
-        this.params = workerParams;
-    }
-
-    @NonNull
-    @Override
-    public ForegroundInfo getForegroundInfo() {
-        return buildForegroundInfo("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
-    }
-
-    private ForegroundInfo buildForegroundInfo(String title, String text, int notificationId, int priority) {
-        Notification notif = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setOngoing(true)
-                .setPriority(priority)
-                .build();
-        return new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC);
     }
 
     @NonNull
     @Override
     public Result doWork() {
-        setForegroundAsync(getForegroundInfo());
+        Path peergosDir = Paths.get(getInputData().getString("PEERGOS_PATH"));
+        return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.failure();
+    }
+
+    /**
+     * Run a single sync pass to completion (or first error). Holds the global sync lock
+     * so it cooperates with SyncService and other periodic invocations — at most one
+     * sync runs at a time across the process.
+     *
+     * @return true on clean completion, false on UnknownHostException / fatal failure
+     */
+    public static boolean runSyncOnce(Context context, Path peergosDir) {
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
-                showNotification("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
-                Data params = this.params.getInputData();
-                int sleepMillis = params.getInt("sleep", 0);
-                try {
-                    Thread.sleep(sleepMillis);
-                } catch (InterruptedException ignored) {
-                }
-                Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
                 Crypto crypto = Main.initCrypto(new ScryptAndroid());
                 Path oldConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
                 Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
@@ -136,7 +111,7 @@ public class SyncWorker extends Worker {
                         crypto.hasher, Collections.emptyList(), false);
                 if (syncConfig.links.isEmpty()) {
                     System.out.println("No sync args");
-                    return Result.success();
+                    return true;
                 }
                 List<String> links = syncConfig.links;
                 List<String> localDirs = syncConfig.localDirs;
@@ -148,7 +123,7 @@ public class SyncWorker extends Worker {
                 // On a metered (mobile) network, drop pairs that aren't allowed there.
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each
                 // pair's allowOnMobile flag is what gates mobile-data usage.
-                if (isMeteredNetwork()) {
+                if (isMeteredNetwork(context)) {
                     List<String> fLinks = new ArrayList<>();
                     List<String> fLocalDirs = new ArrayList<>();
                     List<Boolean> fSyncLocalDeletes = new ArrayList<>();
@@ -163,7 +138,7 @@ public class SyncWorker extends Worker {
                     }
                     if (fLinks.isEmpty()) {
                         System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
-                        return Result.success();
+                        return true;
                     }
                     links = fLinks;
                     localDirs = fLocalDirs;
@@ -173,7 +148,7 @@ public class SyncWorker extends Worker {
 
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
-                                getApplicationContext(), crypto), peergosDir,
+                                context, crypto), peergosDir,
                         status,
                         m -> {
                             status.setStatus(m);
@@ -188,30 +163,25 @@ public class SyncWorker extends Worker {
                                 LOG.log(Level.WARNING, cause, cause::getMessage);
                             }
                         }, network, crypto);
+                return true;
             } catch (MalformedURLException e) {
                 e.printStackTrace();
+                return true;
             } catch (Exception e) {
                 Throwable cause = getCause(e);
                 if (cause instanceof UnknownHostException)
-                    return Result.failure();
+                    return false;
                 String msg = cause.getMessage();
-                if (msg != null && !msg.trim().isEmpty()) {
+                if (msg != null && !msg.trim().isEmpty())
                     status.setError(msg);
-                    showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
-                }
                 LOG.log(Level.WARNING, cause, cause::getMessage);
-                return Result.failure();
-            } finally {
-                closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
+                return false;
             }
-
-            return Result.success();
         }
     }
 
-    private boolean isMeteredNetwork() {
-        ConnectivityManager cm = (ConnectivityManager) getApplicationContext()
-                .getSystemService(Context.CONNECTIVITY_SERVICE);
+    private static boolean isMeteredNetwork(Context context) {
+        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
         if (cm == null) return false;
         Network active = cm.getActiveNetwork();
         if (active == null) return false;
@@ -233,38 +203,5 @@ public class SyncWorker extends Worker {
         if (t instanceof CompletionException)
             return getCause(cause);
         return cause;
-    }
-
-    public void closeNotification(int notificationId) {
-        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
-        mgr.cancel(notificationId);
-    }
-
-    public void showNotification(String title, String text, int notificationId, int priority) {
-        DirectorySync.log(text);
-//        Context context = getApplicationContext();
-        // This PendingIntent can be used to cancel the worker
-//        PendingIntent intent = WorkManager.getInstance(context)
-//                .createCancelPendingIntent(getId());
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setOngoing(true)
-                // Add the cancel action to the notification which can
-                // be used to cancel the worker
-//                .addAction(android.R.drawable.ic_delete, "Cancel", intent)
-                .setPriority(priority);
-
-        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
-        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
-                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-        // notificationId is a unique int for each notification that you must define.
-        Notification notif = builder.build();
-        mgr.notify(notificationId, notif);
-        setForegroundAsync(new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
     }
 }
