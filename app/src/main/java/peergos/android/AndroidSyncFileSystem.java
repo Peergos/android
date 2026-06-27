@@ -470,23 +470,29 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public Optional<PublicKeyHash> applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir) throws IOException {
+    public Optional<PublicKeyHash> applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) throws IOException {
         DocumentFile root = getByPath(Paths.get("")).orElseThrow(() -> new IllegalStateException("Absent sync root!"));
         if (root == null)
             throw new IllegalStateException("Couldn't retrieve local directory!");
-        applyToSubtree(Paths.get(""), root, onFile, onDir);
+        applyToSubtree(Paths.get(""), root, onFile, onDir, parallel);
         return Optional.empty();
     }
 
-    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir) {
+    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) {
         DocumentFile[] kids = dir.listFiles();
-        Arrays.stream(kids).parallel().forEach(kid -> {
+        // Sequential during the first sync for this pair — parallel siblings race on
+        // mkdir/cryptree updates for a shared parent and stall progress with CAS
+        // exceptions. Switch to parallel once an initial sync has completed.
+        java.util.stream.Stream<DocumentFile> stream = parallel
+                ? Arrays.stream(kids).parallel()
+                : Arrays.stream(kids);
+        stream.forEach(kid -> {
             FileProps props = new FileProps(p.resolve(kid.getName()).toString(), kid.lastModified() / 1000 * 1000, kid.length(), Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
             } else {
                 onDir.accept(props);
-                applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir);
+                applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir, parallel);
             }
         });
     }
