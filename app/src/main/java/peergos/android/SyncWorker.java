@@ -155,9 +155,10 @@ public class SyncWorker extends Worker {
             } catch (MalformedURLException e) {
                 e.printStackTrace();
             } catch (Exception e) {
-                if (getCause(e) instanceof UnknownHostException)
+                Throwable cause = getCause(e);
+                if (cause instanceof UnknownHostException)
                     return Result.failure();
-                String msg = e.getMessage();
+                String msg = cause.getMessage();
                 if (msg != null && !msg.trim().isEmpty()) {
                     status.setError(msg);
                     showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
