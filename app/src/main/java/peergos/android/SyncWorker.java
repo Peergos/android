@@ -5,6 +5,9 @@ import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
 import android.app.Notification;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 
 import androidx.annotation.NonNull;
@@ -24,6 +27,7 @@ import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -141,6 +145,32 @@ public class SyncWorker extends Worker {
                 int maxDownloadParallelism = syncConfig.maxDownloadParallelism;
                 int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
 
+                // On a metered (mobile) network, drop pairs that aren't allowed there.
+                // The periodic worker constraint is CONNECTED, not UNMETERED, so each
+                // pair's allowOnMobile flag is what gates mobile-data usage.
+                if (isMeteredNetwork()) {
+                    List<String> fLinks = new ArrayList<>();
+                    List<String> fLocalDirs = new ArrayList<>();
+                    List<Boolean> fSyncLocalDeletes = new ArrayList<>();
+                    List<Boolean> fSyncRemoteDeletes = new ArrayList<>();
+                    for (int i = 0; i < links.size(); i++) {
+                        if (syncConfig.allowOnMobile.get(i)) {
+                            fLinks.add(links.get(i));
+                            fLocalDirs.add(localDirs.get(i));
+                            fSyncLocalDeletes.add(syncLocalDeletes.get(i));
+                            fSyncRemoteDeletes.add(syncRemoteDeletes.get(i));
+                        }
+                    }
+                    if (fLinks.isEmpty()) {
+                        System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                        return Result.success();
+                    }
+                    links = fLinks;
+                    localDirs = fLocalDirs;
+                    syncLocalDeletes = fSyncLocalDeletes;
+                    syncRemoteDeletes = fSyncRemoteDeletes;
+                }
+
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
                                 getApplicationContext(), crypto), peergosDir,
@@ -177,6 +207,19 @@ public class SyncWorker extends Worker {
 
             return Result.success();
         }
+    }
+
+    private boolean isMeteredNetwork() {
+        ConnectivityManager cm = (ConnectivityManager) getApplicationContext()
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        Network active = cm.getActiveNetwork();
+        if (active == null) return false;
+        NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+        if (caps == null) return false;
+        // NET_CAPABILITY_NOT_METERED is set on Wi-Fi/Ethernet by default; mobile data
+        // and metered hotspots lack it.
+        return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
     }
 
     private static Throwable getCause(Throwable t) {

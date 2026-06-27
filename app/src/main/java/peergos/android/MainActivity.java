@@ -1136,8 +1136,10 @@ public class MainActivity extends AppCompatActivity {
             Data syncArgs = new Data.Builder()
                     .putString("PEERGOS_PATH", peergosDir.toString())
                     .build();
+            // Use CONNECTED rather than UNMETERED because allow-on-mobile is per-pair;
+            // SyncWorker checks the current network metered-ness and filters pairs.
             Constraints periodic = new Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(true)
                 .setRequiresStorageNotLow(true)
                 .build();
