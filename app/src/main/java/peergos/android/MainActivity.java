@@ -125,6 +125,7 @@ import peergos.server.net.SyncConfigHandler;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
+import peergos.server.sync.PairLogger;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
@@ -271,6 +272,66 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 runOnUiThread(() -> Toast.makeText(this,
                         "Failed to download logs: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    @JavascriptInterface
+    public void downloadSyncLog(String label) {
+        new Thread(() -> {
+            try {
+                Path peergosDir = Paths.get(getFilesDir().getAbsolutePath());
+                Path configPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+                if (! Files.exists(configPath)) {
+                    runOnUiThread(() -> Toast.makeText(this, "No sync config found", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                Map<String, Object> json = (Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(configPath)));
+                List<Map<String, Object>> pairs = (List<Map<String, Object>>) json.get("pairs");
+                Map<String, Object> match = null;
+                for (Map<String, Object> p : pairs) {
+                    String link = (String) p.get("link");
+                    String pairLabel = link.substring(link.lastIndexOf("/", link.indexOf("#")) + 1, link.indexOf("#"));
+                    if (pairLabel.equals(label)) {
+                        match = p;
+                        break;
+                    }
+                }
+                if (match == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Unknown sync label", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                String linkPath = (String) match.get("remotepath");
+                String localDir = (String) match.get("localpath");
+                String hash = PairLogger.hash(linkPath, localDir);
+                Path rotated = PairLogger.rotatedLogPath(peergosDir, hash);
+                Path current = PairLogger.currentLogPath(peergosDir, hash);
+                if (! Files.exists(rotated) && ! Files.exists(current)) {
+                    runOnUiThread(() -> Toast.makeText(this, "No sync log yet for this pair", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                String fileName = "sync-" + label + "-" + System.currentTimeMillis() + ".log";
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Could not create download file", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (Files.exists(rotated))
+                        Files.copy(rotated, out);
+                    if (Files.exists(current))
+                        Files.copy(current, out);
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Sync log saved to Downloads/" + fileName, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Failed to download sync log: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
         }).start();
     }
