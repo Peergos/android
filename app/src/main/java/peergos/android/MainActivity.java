@@ -72,6 +72,7 @@ import androidx.documentfile.provider.DocumentFile;
 import androidx.lifecycle.ProcessLifecycleOwner;
 import androidx.work.Constraints;
 import androidx.work.Data;
+import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
@@ -105,7 +106,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -1246,8 +1246,6 @@ public class MainActivity extends AppCompatActivity {
             WorkManager backgroundWork = WorkManager.getInstance(this);
             Path syncConfigPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
             SyncRunner syncer = new SyncRunner() {
-                private static final String periodicUuid = "fe64ee2f-a2a2-4dab-96d8-0aec9475541f";
-
                 @Override
                 public void start() {
                     // start() is invoked by SyncConfigHandler after a pair has been
@@ -1256,11 +1254,16 @@ public class MainActivity extends AppCompatActivity {
                     if (readPairCount() == 1)
                         runOnUiThread(MainActivity.this::maybePromptBatteryOptimization);
                     runNow();
-                    backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
-                            .setConstraints(periodic)
-                            .setId(UUID.fromString(periodicUuid))
-                            .setInputData(syncArgs).setInitialDelay(Duration.of(1, ChronoUnit.MINUTES))
-                            .build());
+                    // UPDATE so constraint changes (e.g. the UNMETERED → CONNECTED switch
+                    // to enable per-pair mobile-data sync) take effect on upgrade without
+                    // resetting the periodic schedule.
+                    backgroundWork.enqueueUniquePeriodicWork("peergos-sync",
+                            ExistingPeriodicWorkPolicy.UPDATE,
+                            new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
+                                    .setConstraints(periodic)
+                                    .setInputData(syncArgs)
+                                    .setInitialDelay(Duration.of(1, ChronoUnit.MINUTES))
+                                    .build());
                 }
 
                 @Override
