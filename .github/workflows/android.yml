@@ -57,10 +57,21 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest --info
+          script: |
+            adb logcat -c
+            adb logcat -v threadtime > logcat.txt &
+            LOGCAT_PID=$!
+            set +e
+            ./gradlew connectedDebugAndroidTest --info
+            STATUS=$?
+            kill $LOGCAT_PID 2>/dev/null || true
+            exit $STATUS
 
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-test-reports-api${{ matrix.api-level }}
-          path: app/build/reports/androidTests/connected/**
+          path: |
+            app/build/reports/androidTests/connected/**
+            app/build/outputs/androidTest-results/connected/**
+            logcat.txt
