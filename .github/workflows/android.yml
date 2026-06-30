@@ -9,11 +9,19 @@ jobs:
         api-level: [30, 35]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
+
+      - name: Install Ant
+        run: sudo apt-get update && sudo apt-get install -y ant
+
+      - name: Build host Peergos fat jar
+        run: cd web-ui && ant dist
 
       - name: Enable KVM
         run: |
@@ -23,6 +31,47 @@ jobs:
           fi
           sudo chmod 666 /dev/kvm
           ls -la /dev/kvm
+
+      - name: Start Peergos server on host
+        run: |
+          export PEERGOS_HOST_DIR=$(mktemp -d)
+          nohup java -jar web-ui/server/Peergos.jar pki-init \
+            -port 8000 \
+            -proxy-target /ip4/127.0.0.1/tcp/5556 \
+            -gateway-port 8090 \
+            -ipfs-api-address /ip4/127.0.0.1/tcp/5001 \
+            -ipfs-gateway-address /ip4/127.0.0.1/tcp/8080 \
+            -ipfs-swarm-port 4001 \
+            -ipfs.metrics.port 6001 \
+            -useIPFS false \
+            -listen-host 0.0.0.0 \
+            -admin-usernames peergos \
+            -logToConsole true \
+            -enable-gc false \
+            max-users 10000 \
+            max-daily-signups 20000 \
+            PEERGOS_PATH "$PEERGOS_HOST_DIR" \
+            peergos.password testpassword \
+            pki.keygen.password testpkipassword \
+            pki.keyfile.password testpassword > peergos-host.log 2>&1 &
+          echo $! > peergos-host.pid
+          echo "Waiting for server to come up..."
+          for i in $(seq 1 180); do
+            if ! kill -0 $(cat peergos-host.pid) 2>/dev/null; then
+              echo "::error::peergos server exited early"
+              tail -50 peergos-host.log
+              exit 1
+            fi
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:8000/ || echo 000)
+            if [ "$code" != "000" ]; then
+              echo "Server ready (HTTP $code) after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::peergos server did not respond on :8000 within 180s"
+          tail -80 peergos-host.log
+          exit 1
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -62,10 +111,19 @@ jobs:
             adb logcat -v threadtime > logcat.txt &
             LOGCAT_PID=$!
             set +e
-            ./gradlew connectedDebugAndroidTest --info
+            ./gradlew connectedDebugAndroidTest --info \
+              -Pandroid.testInstrumentationRunnerArguments.peergosHost=10.0.2.2 \
+              -Pandroid.testInstrumentationRunnerArguments.peergosPort=8000
             STATUS=$?
             kill $LOGCAT_PID 2>/dev/null || true
             exit $STATUS
+
+      - name: Stop Peergos server
+        if: always()
+        run: |
+          if [ -f peergos-host.pid ]; then
+            kill $(cat peergos-host.pid) 2>/dev/null || true
+          fi
 
       - if: always()
         uses: actions/upload-artifact@v4
@@ -75,3 +133,4 @@ jobs:
             app/build/reports/androidTests/connected/**
             app/build/outputs/androidTest-results/connected/**
             logcat.txt
+            peergos-host.log

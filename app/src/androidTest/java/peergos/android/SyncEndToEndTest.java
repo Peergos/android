@@ -1,106 +1,66 @@
 package peergos.android;
 
-import android.content.Context;
+import android.os.Bundle;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.io.File;
-import java.io.IOException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.net.ServerSocket;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.Set;
+import java.net.URL;
+import java.util.Collections;
+import java.util.Optional;
 
 import peergos.server.Main;
-import peergos.server.ServerProcesses;
-import peergos.server.util.Args;
+import peergos.shared.Crypto;
+import peergos.shared.NetworkAccess;
+import peergos.shared.corenode.CoreNode;
+import peergos.shared.storage.ContentAddressedStorage;
+import peergos.shared.user.HttpPoster;
+import peergos.shared.user.UserContext;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 
+/** End-to-end sync test against a Peergos server running on the host.
+ *  The emulator reaches the host via 10.0.2.2; the server itself runs on a
+ *  normal JVM so we sidestep Android-incompatible bits of peergos.server
+ *  (java.net.http, sun.net.httpserver, sqlite-jdbc Linux natives).
+ *  Host/port come from instrumentation args (set by the workflow). */
 @RunWith(AndroidJUnit4.class)
 public class SyncEndToEndTest {
 
-    private static ServerProcesses processes;
-    private static Args args;
-    private static Path peergosDir;
+    private static Crypto crypto;
+    private static NetworkAccess network;
 
     @BeforeClass
-    public static void startServer() throws Exception {
-        Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        peergosDir = new File(ctx.getCacheDir(), "peergos-e2e-" + System.currentTimeMillis()).toPath();
-        Files.createDirectories(peergosDir);
+    public static void connectToHostServer() throws Exception {
+        Bundle args = InstrumentationRegistry.getArguments();
+        String host = args.getString("peergosHost", "10.0.2.2");
+        int port = Integer.parseInt(args.getString("peergosPort", "8000"));
+        URL serverUrl = new URL("http://" + host + ":" + port);
 
-        int port = freePort();
-        int proxyPort = freePort();
-        int gatewayPort = freePort();
-        int ipfsApi = freePort();
-        int ipfsGw = freePort();
-        int ipfsSwarm = freePort();
-        int metricsPort = freePort();
-
-        args = Args.parse(new String[]{
-                "-port", Integer.toString(port),
-                "-proxy-target", "/ip4/127.0.0.1/tcp/" + proxyPort,
-                "-gateway-port", Integer.toString(gatewayPort),
-                "-ipfs-api-address", "/ip4/127.0.0.1/tcp/" + ipfsApi,
-                "-ipfs-gateway-address", "/ip4/127.0.0.1/tcp/" + ipfsGw,
-                "-ipfs-swarm-port", Integer.toString(ipfsSwarm),
-                "-ipfs.metrics.port", Integer.toString(metricsPort),
-                "-useIPFS", "false",
-                "-listen-host", "localhost",
-                "-admin-usernames", "peergos",
-                "-logToConsole", "true",
-                "-enable-gc", "false",
-                "max-users", "10000",
-                "max-daily-signups", "20000",
-                Main.PEERGOS_PATH, peergosDir.toString(),
-                "peergos.password", "testpassword",
-                "pki.keygen.password", "testpkipassword",
-                "pki.keyfile.password", "testpassword",
-        });
-
-        processes = Main.PKI_INIT.main(args);
-        assertNotNull("PKI_INIT returned null", processes);
-        assertNotNull("localApi missing", processes.localApi);
-    }
-
-    @AfterClass
-    public static void stopServer() {
-        if (processes != null && processes.localApi != null) {
-            try { processes.localApi.stop(); } catch (Exception ignored) {}
-        }
-        if (processes != null && processes.p2pApi != null && processes.p2pApi != processes.localApi) {
-            try { processes.p2pApi.stop(); } catch (Exception ignored) {}
-        }
+        crypto = Main.initCrypto(new ScryptAndroid());
+        HttpPoster poster = new AndroidPoster(serverUrl, false,
+                Optional.empty(), Optional.of("peergos-android-test"));
+        ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
+        CoreNode core = NetworkAccess.buildDirectCorenode(poster);
+        network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
+                5_000, crypto.hasher, false).join();
     }
 
     @Test
-    public void serverIsAlive() {
-        assertNotNull("storage id was null", processes.localApi.storage.id().join());
+    public void serverIsReachable() {
+        assertNotNull(network.dhtClient.id().join());
     }
 
-    private static final Set<Integer> handedOut = new HashSet<>();
-
-    private static synchronized int freePort() throws IOException {
-        for (int i = 0; i < 50; i++) {
-            int port;
-            try (ServerSocket s = new ServerSocket()) {
-                s.setReuseAddress(true);
-                s.bind(new InetSocketAddress((InetAddress) null, 0));
-                port = s.getLocalPort();
-            }
-            if (handedOut.add(port))
-                return port;
-        }
-        throw new IOException("could not allocate free port");
+    @Test
+    public void signUpRoundTrip() {
+        String username = "androidtest" + (System.currentTimeMillis() % 1_000_000);
+        UserContext ctx = UserContext.signUp(username, "test-password", "", network, crypto).join();
+        assertNotNull(ctx);
+        assertEquals(username, ctx.username);
     }
 }
