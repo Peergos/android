@@ -6,11 +6,7 @@
             android:name="peergos.android.TestDocumentsProvider"
             android:authorities="peergos.android.test.documents"
             android:exported="true"
-            android:grantUriPermissions="true">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

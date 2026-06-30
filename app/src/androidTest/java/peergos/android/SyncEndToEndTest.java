@@ -1,6 +1,9 @@
 package peergos.android;
 
+import android.content.Context;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.DocumentsContract;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -10,16 +13,24 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.net.URL;
-import java.util.Collections;
+import java.nio.file.Files;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 
 import peergos.server.Main;
+import peergos.server.sync.DirectorySync;
+import peergos.server.sync.JdbcTreeState;
+import peergos.server.sync.PeergosSyncFS;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.corenode.CoreNode;
+import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.user.HttpPoster;
+import peergos.shared.user.LinkProperties;
 import peergos.shared.user.UserContext;
+import peergos.shared.user.fs.FileWrapper;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -58,9 +69,69 @@ public class SyncEndToEndTest {
 
     @Test
     public void signUpRoundTrip() {
-        String username = "androidtest" + (System.currentTimeMillis() % 1_000_000);
+        String username = freshUsername();
         UserContext ctx = UserContext.signUp(username, "test-password", "", network, crypto).join();
         assertNotNull(ctx);
         assertEquals(username, ctx.username);
+    }
+
+    /** Push a directory of random-bytes "images" through DirectorySync to a
+     *  fresh remote dir, then assert every file made it across.
+     *  File count is configurable via the syncFileCount instrumentation arg
+     *  (default 1000); size is uniform in [2 MiB, 5 MiB]. */
+    @Test
+    public void largeDirSyncToPeergos() throws Exception {
+        Bundle args = InstrumentationRegistry.getArguments();
+        int count = Integer.parseInt(args.getString("syncFileCount", "1000"));
+        long minSize = 2L * 1024 * 1024;
+        long maxSize = 5L * 1024 * 1024;
+        long seed = 42L;
+
+        Context appCtx = InstrumentationRegistry.getInstrumentation().getTargetContext();
+
+        Uri authorityUri = Uri.parse("content://" + TestDocumentsProvider.AUTHORITY);
+        Bundle seedArgs = new Bundle();
+        seedArgs.putInt("count", count);
+        seedArgs.putLong("seed", seed);
+        seedArgs.putLong("minSize", minSize);
+        seedArgs.putLong("maxSize", maxSize);
+        appCtx.getContentResolver().call(authorityUri,
+                TestDocumentsProvider.METHOD_RESET_AND_SEED, null, seedArgs);
+
+        String username = freshUsername();
+        UserContext userCtx = UserContext.signUp(username, "test-password", "", network, crypto).join();
+        String syncFolderName = "synced-images";
+        userCtx.getUserRoot().join()
+                .mkdir(syncFolderName, network, false, userCtx.mirrorBatId(), crypto).join();
+        String peergosPath = "/" + username + "/" + syncFolderName;
+
+        LinkProperties link = DirectorySync.init(userCtx, peergosPath);
+        String cap = link.toLinkString(userCtx.signer.publicKeyHash);
+        PeergosSyncFS remote = DirectorySync.buildRemote(cap, network, crypto);
+
+        Uri treeUri = DocumentsContract.buildTreeDocumentUri(
+                TestDocumentsProvider.AUTHORITY, TestDocumentsProvider.ROOT_ID);
+        AndroidSyncFileSystem local = new AndroidSyncFileSystem(treeUri, appCtx, crypto);
+
+        java.nio.file.Path syncStateDir = Files.createTempDirectory(appCtx.getCacheDir().toPath(), "sync-state");
+        JdbcTreeState state = new JdbcTreeState(":memory:");
+        PublicKeyHash owner = network.coreNode.getPublicKeyHash(username).join().get();
+
+        DirectorySync.syncDir(local, remote, false, false, owner, network, state,
+                32, 5, syncStateDir, crypto, () -> false, DirectorySync::log);
+
+        UserContext freshCtx = UserContext.signIn(username, "test-password", req -> {
+            throw new IllegalStateException("MFA not expected");
+        }, network, crypto).join();
+        FileWrapper remoteDir = freshCtx.getByPath(peergosPath).join().get();
+        Set<FileWrapper> children = remoteDir.getChildren(crypto.hasher, network).join();
+
+        Set<String> remoteNames = new HashSet<>();
+        for (FileWrapper c : children) remoteNames.add(c.getName());
+        assertEquals(count, remoteNames.size());
+    }
+
+    private static String freshUsername() {
+        return "androidtest" + (System.currentTimeMillis() % 1_000_000);
     }
 }
