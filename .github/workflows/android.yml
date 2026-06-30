@@ -111,9 +111,7 @@ jobs:
             adb logcat -v threadtime > logcat.txt &
             LOGCAT_PID=$!
             set +e
-            ./gradlew connectedDebugAndroidTest --info \
-              -Pandroid.testInstrumentationRunnerArguments.peergosHost=10.0.2.2 \
-              -Pandroid.testInstrumentationRunnerArguments.peergosPort=8000
+            ./gradlew connectedDebugAndroidTest --info -Pandroid.testInstrumentationRunnerArguments.peergosHost=10.0.2.2 -Pandroid.testInstrumentationRunnerArguments.peergosPort=8000
             STATUS=$?
             kill $LOGCAT_PID 2>/dev/null || true
             exit $STATUS
