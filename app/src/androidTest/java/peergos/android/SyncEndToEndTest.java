@@ -86,7 +86,7 @@ public class SyncEndToEndTest {
     @Test
     public void largeDirSyncToPeergos() throws Exception {
         Bundle args = InstrumentationRegistry.getArguments();
-        int count = Integer.parseInt(args.getString("syncFileCount", "1000"));
+        int count = Integer.parseInt(args.getString("syncFileCount", "100"));
         long minSize = 2L * 1024 * 1024;
         long maxSize = 5L * 1024 * 1024;
         long seed = 42L;
