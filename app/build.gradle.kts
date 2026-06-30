@@ -41,6 +41,20 @@ android {
             version = "3.22.1"
         }
     }
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
+                "META-INF/NOTICE*",
+                "META-INF/LICENSE*",
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+                "META-INF/MANIFEST.MF"
+            )
+        }
+    }
 }
 
 dependencies {
