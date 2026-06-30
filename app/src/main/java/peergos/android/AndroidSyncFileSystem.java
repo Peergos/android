@@ -354,7 +354,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         DocumentFile file = existing.get();
         String type = file.getType();
 
-        if (type == null || ! type.startsWith("video"))
+        if (type == null || (! type.startsWith("video") && ! type.startsWith("image")))
             return Optional.empty();
 
         Bitmap image = null;
@@ -372,7 +372,18 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
 
             byte[] webpBytes = compressToWebp(image);
-            return Optional.of(new Thumbnail("image/webp", webpBytes));
+            try {
+                return Optional.of(new Thumbnail("image/webp", webpBytes));
+            } catch (IllegalStateException tooBig) {
+                // Noise pixels at 400x400 lossy-100 can blow past the 100 KiB
+                // Thumbnail cap; AndroidImageThumbnailer uses the same fallback.
+                Bitmap small = Bitmap.createScaledBitmap(image, 200, 200, true);
+                try {
+                    return Optional.of(new Thumbnail("image/webp", compressToWebp(small)));
+                } finally {
+                    small.recycle();
+                }
+            }
         } catch (IOException e) {
             e.printStackTrace();
             return Optional.empty();

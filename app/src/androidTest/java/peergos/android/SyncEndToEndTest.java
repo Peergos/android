@@ -30,10 +30,13 @@ import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.user.HttpPoster;
 import peergos.shared.user.LinkProperties;
 import peergos.shared.user.UserContext;
+import peergos.shared.user.fs.FileProperties;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.user.fs.ThumbnailGenerator;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 /** End-to-end sync test against a Peergos server running on the host.
  *  The emulator reaches the host via 10.0.2.2; the server itself runs on a
@@ -54,6 +57,7 @@ public class SyncEndToEndTest {
         URL serverUrl = new URL("http://" + host + ":" + port);
 
         crypto = Main.initCrypto(new ScryptAndroid());
+        ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         HttpPoster poster = new AndroidPoster(serverUrl, false,
                 Optional.empty(), Optional.of("peergos-android-test"));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
@@ -129,6 +133,26 @@ public class SyncEndToEndTest {
         Set<String> remoteNames = new HashSet<>();
         for (FileWrapper c : children) remoteNames.add(c.getName());
         assertEquals(count, remoteNames.size());
+
+        int withThumb = 0, withHash = 0;
+        for (FileWrapper c : children) {
+            FileProperties p = c.getFileProperties();
+            System.out.println("CHILD " + c.getName() + " size=" + p.size
+                    + " thumb=" + p.thumbnail.isPresent()
+                    + " hash=" + p.treeHash.isPresent()
+                    + " mime=" + p.mimeType);
+            if (p.thumbnail.isPresent()) withThumb++;
+            if (p.treeHash.isPresent()) withHash++;
+        }
+        FileWrapper sameCtx = userCtx.getByPath(peergosPath).join().get();
+        for (FileWrapper c : sameCtx.getChildren(crypto.hasher, network).join()) {
+            FileProperties p = c.getFileProperties();
+            System.out.println("SAMECTX " + c.getName() + " hash=" + p.treeHash.isPresent());
+        }
+        assertTrue("expected thumbnails on synced images (got " + withThumb + "/" + count + ")",
+                withThumb >= 1);
+        assertTrue("expected tree hashes on synced files (got " + withHash + "/" + count + ")",
+                withHash >= 1);
     }
 
     private static String freshUsername() {

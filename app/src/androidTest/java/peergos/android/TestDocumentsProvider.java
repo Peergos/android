@@ -184,19 +184,51 @@ public class TestDocumentsProvider extends ContentProvider {
         deleteRecursive(rootDir);
         rootDir.mkdirs();
         java.util.Random rng = new java.util.Random(seed);
-        byte[] buf = new byte[64 * 1024];
         for (int i = 0; i < count; i++) {
-            long size = minSize + (long) (rng.nextDouble() * (maxSize - minSize));
-            File f = new File(rootDir, String.format("img-%05d.bin", i));
-            try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
-                long remaining = size;
-                while (remaining > 0) {
-                    int n = (int) Math.min(buf.length, remaining);
-                    rng.nextBytes(buf);
-                    out.write(buf, 0, n);
-                    remaining -= n;
+            File f = new File(rootDir, String.format("img-%05d.jpg", i));
+            writeJpeg(f, rng, minSize, maxSize);
+        }
+    }
+
+    /** Produces a real JPEG (decodable by BitmapFactory, exercised by the
+     *  thumbnailer). Noise pixels barely compress, so JPEG bytes scale roughly
+     *  linearly with pixel count; we pick dimensions to land near a target
+     *  inside [minSize, maxSize]. If the encoder still overshoots, we drop
+     *  quality; if it undershoots, we append random padding bytes
+     *  (BitmapFactory ignores trailing bytes after the JPEG EOI marker). */
+    private static void writeJpeg(File dst, java.util.Random rng, long minSize, long maxSize) throws IOException {
+        long targetSize = minSize + (long) (rng.nextDouble() * (maxSize - minSize));
+        int dim = (int) Math.round(Math.sqrt(targetSize / 1.4));
+        android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                dim, dim, android.graphics.Bitmap.Config.ARGB_8888);
+        try {
+            int[] pixels = new int[dim * dim];
+            for (int p = 0; p < pixels.length; p++) pixels[p] = rng.nextInt();
+            bmp.setPixels(pixels, 0, dim, 0, 0, dim, dim);
+
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            int quality = 95;
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, buf);
+            while (buf.size() > maxSize && quality > 50) {
+                quality -= 10;
+                buf.reset();
+                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, buf);
+            }
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(dst)) {
+                buf.writeTo(out);
+                long pad = minSize - buf.size();
+                if (pad > 0) {
+                    byte[] padBuf = new byte[64 * 1024];
+                    while (pad > 0) {
+                        int n = (int) Math.min(padBuf.length, pad);
+                        rng.nextBytes(padBuf);
+                        out.write(padBuf, 0, n);
+                        pad -= n;
+                    }
                 }
             }
+        } finally {
+            bmp.recycle();
         }
     }
 

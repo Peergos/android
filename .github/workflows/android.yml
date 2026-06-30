@@ -48,6 +48,8 @@ jobs:
             -admin-usernames peergos \
             -logToConsole true \
             -enable-gc false \
+            -default-quota 10737418240 \
+            -quota-upload-limit-seconds 1 \
             max-users 10000 \
             max-daily-signups 20000 \
             PEERGOS_PATH "$PEERGOS_HOST_DIR" \
