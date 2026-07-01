@@ -63,7 +63,7 @@ public class PeergosApp extends Application {
         handler.start();
     }
 
-    private static Optional<String> readSavedServerUrl(Path peergosDir) {
+    static Optional<String> readSavedServerUrl(Path peergosDir) {
         try {
             Path configFile = peergosDir.resolve("config");
             if (!Files.exists(configFile))

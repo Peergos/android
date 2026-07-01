@@ -93,7 +93,7 @@ public class SyncWorker extends Worker {
                         .with("PEERGOS_PATH", peergosDir.toString())
                         .with("pki-cache-sql-file", "pki-cache.sqlite");
 
-                URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
+                URL target = new URL(PeergosApp.readSavedServerUrl(peergosDir).orElse("https://peergos.net"));
                 HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
                 ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
                 CoreNode directCore = NetworkAccess.buildDirectCorenode(poster);
