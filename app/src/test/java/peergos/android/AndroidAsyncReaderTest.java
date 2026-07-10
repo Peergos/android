@@ -31,6 +31,40 @@ public class AndroidAsyncReaderTest {
         }
     }
 
+    /** Mimics a stream whose read() returns fewer bytes than asked: at most maxPerRead per call. */
+    private static class ShortReadStream extends ByteArrayInputStream {
+        private final int maxPerRead;
+        ShortReadStream(byte[] buf, int maxPerRead) {
+            super(buf);
+            this.maxPerRead = maxPerRead;
+        }
+        @Override
+        public synchronized int read(byte[] b, int off, int len) {
+            return super.read(b, off, Math.min(len, maxPerRead));
+        }
+    }
+
+    @Test
+    public void readIntoArrayFullyFillsDespiteShortReads() {
+        // The AsyncReader contract (relied on by FileUploader, which encrypts the whole chunk
+        // buffer) is: readIntoArray fills the requested length unless EOF. InputStream.read may
+        // return fewer bytes than asked (routine for content-provider streams), so readIntoArray
+        // must loop; otherwise an uploaded chunk is zero-padded and the file is corrupted.
+        byte[] data = new byte[100_000];
+        new Random(7).nextBytes(data);
+
+        AndroidAsyncReader reader = new AndroidAsyncReader(
+                new ShortReadStream(data, 4096),        // returns at most 4096 bytes per read()
+                () -> new ShortReadStream(data, 4096));
+
+        byte[] got = new byte[data.length];
+        int read = reader.readIntoArray(got, 0, got.length).join();
+
+        Assert.assertEquals("readIntoArray must fill the whole buffer, not stop at the first short read",
+                data.length, read);
+        Assert.assertArrayEquals(data, got);
+    }
+
     @Test
     public void seekLandsAtRequestedOffsetDespiteShortSkip() {
         byte[] data = new byte[100_000];
