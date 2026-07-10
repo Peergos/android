@@ -183,7 +183,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         long current = f.length();
         if (current < size)
             return;
-        try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "t");
+        try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "rw");
              FileOutputStream fout = new FileOutputStream(pfd.getFileDescriptor())) {
             fout.getChannel().truncate(size);
         }
