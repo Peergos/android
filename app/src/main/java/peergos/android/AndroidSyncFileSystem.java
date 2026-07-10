@@ -404,7 +404,10 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     chunkHash.update(buf, 0, thisChunk);
                     chunkHashes.add(chunkHash.digest());
                     chunkHash = MessageDigest.getInstance("SHA-256");
-                    chunkOffset = 0;
+                    int leftover = read - thisChunk;
+                    if (leftover > 0)
+                        chunkHash.update(buf, thisChunk, leftover);
+                    chunkOffset = leftover;
                 } else
                     chunkHash.update(buf, 0, read);
                 i += read;
