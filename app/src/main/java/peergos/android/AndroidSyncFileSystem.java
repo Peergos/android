@@ -183,7 +183,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         long current = f.length();
         if (current < size)
             return;
-        try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "t");
+        try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "rw");
              FileOutputStream fout = new FileOutputStream(pfd.getFileDescriptor())) {
             fout.getChannel().truncate(size);
         }
@@ -272,9 +272,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     @Override
     public AsyncReader getBytes(Path p, long fileOffset) throws IOException {
         DocumentFile file = getByPath(p).orElseThrow(() -> new FileNotFoundException("Absent file: " + p));
-        InputStream fin = context.getContentResolver().openInputStream(file.getUri());
-        fin.skip(fileOffset);
-        return new AndroidAsyncReader(fin, () -> getInputStream(file));
+        return new AndroidAsyncReader(getInputStream(file), () -> getInputStream(file)).seek(fileOffset).join();
     }
 
     @Override
@@ -354,7 +352,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         DocumentFile file = existing.get();
         String type = file.getType();
 
-        if (type == null || ! type.startsWith("video"))
+        if (type == null || (! type.startsWith("video") && ! type.startsWith("image")))
             return Optional.empty();
 
         Bitmap image = null;
@@ -372,7 +370,18 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             }
 
             byte[] webpBytes = compressToWebp(image);
-            return Optional.of(new Thumbnail("image/webp", webpBytes));
+            try {
+                return Optional.of(new Thumbnail("image/webp", webpBytes));
+            } catch (IllegalStateException tooBig) {
+                // Noise pixels at 400x400 lossy-100 can blow past the 100 KiB
+                // Thumbnail cap; AndroidImageThumbnailer uses the same fallback.
+                Bitmap small = Bitmap.createScaledBitmap(image, 200, 200, true);
+                try {
+                    return Optional.of(new Thumbnail("image/webp", compressToWebp(small)));
+                } finally {
+                    small.recycle();
+                }
+            }
         } catch (IOException e) {
             e.printStackTrace();
             return Optional.empty();
@@ -393,7 +402,10 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                     chunkHash.update(buf, 0, thisChunk);
                     chunkHashes.add(chunkHash.digest());
                     chunkHash = MessageDigest.getInstance("SHA-256");
-                    chunkOffset = 0;
+                    int leftover = read - thisChunk;
+                    if (leftover > 0)
+                        chunkHash.update(buf, thisChunk, leftover);
+                    chunkOffset = leftover;
                 } else
                     chunkHash.update(buf, 0, read);
                 i += read;
@@ -470,23 +482,29 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public Optional<PublicKeyHash> applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir) throws IOException {
+    public Optional<PublicKeyHash> applyToSubtree(Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) throws IOException {
         DocumentFile root = getByPath(Paths.get("")).orElseThrow(() -> new IllegalStateException("Absent sync root!"));
         if (root == null)
             throw new IllegalStateException("Couldn't retrieve local directory!");
-        applyToSubtree(Paths.get(""), root, onFile, onDir);
+        applyToSubtree(Paths.get(""), root, onFile, onDir, parallel);
         return Optional.empty();
     }
 
-    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir) {
+    public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) {
         DocumentFile[] kids = dir.listFiles();
-        Arrays.stream(kids).parallel().forEach(kid -> {
+        // Sequential during the first sync for this pair — parallel siblings race on
+        // mkdir/cryptree updates for a shared parent and stall progress with CAS
+        // exceptions. Switch to parallel once an initial sync has completed.
+        java.util.stream.Stream<DocumentFile> stream = parallel
+                ? Arrays.stream(kids).parallel()
+                : Arrays.stream(kids);
+        stream.forEach(kid -> {
             FileProps props = new FileProps(p.resolve(kid.getName()).toString(), kid.lastModified() / 1000 * 1000, kid.length(), Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
             } else {
                 onDir.accept(props);
-                applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir);
+                applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir, parallel);
             }
         });
     }

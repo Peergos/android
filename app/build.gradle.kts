@@ -10,8 +10,8 @@ android {
         applicationId = "peergos.android"
         minSdk = 30
         targetSdk = 35
-        versionCode = 51
-        versionName = "1.29.2"
+        versionCode = 57
+        versionName = "1.30.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
@@ -41,6 +41,20 @@ android {
             version = "3.22.1"
         }
     }
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
+                "META-INF/NOTICE*",
+                "META-INF/LICENSE*",
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+                "META-INF/MANIFEST.MF"
+            )
+        }
+    }
 }
 
 dependencies {
@@ -60,6 +74,9 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("com.yubico.yubikit:android:3.0.1")
     implementation("com.yubico.yubikit:fido:3.0.1")
+    implementation("androidx.security:security-crypto:1.1.0") {
+        exclude(group = "com.google.code.gson", module = "gson")
+    }
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)

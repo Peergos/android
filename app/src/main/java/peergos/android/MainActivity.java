@@ -8,9 +8,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.provider.DocumentsContract;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.media.ThumbnailUtils;
@@ -18,6 +20,11 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.PowerManager;
+import android.content.ContentValues;
+import android.content.SharedPreferences;
+import android.provider.MediaStore;
+import android.provider.Settings;
 import android.os.storage.StorageManager;
 import android.util.Size;
 import android.view.ViewGroup;
@@ -42,7 +49,6 @@ import com.yubico.yubikit.android.transport.usb.UsbConfiguration;
 import com.yubico.yubikit.android.transport.usb.DeviceFilter;
 import com.yubico.yubikit.android.transport.usb.UsbYubiKeyDevice;
 import com.yubico.yubikit.core.YubiKeyDevice;
-import com.yubico.yubikit.core.application.CommandException;
 import com.yubico.yubikit.core.fido.FidoConnection;
 import com.yubico.yubikit.core.smartcard.SmartCardConnection;
 import com.yubico.yubikit.fido.Cbor;
@@ -66,6 +72,7 @@ import androidx.documentfile.provider.DocumentFile;
 import androidx.lifecycle.ProcessLifecycleOwner;
 import androidx.work.Constraints;
 import androidx.work.Data;
+import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
@@ -77,7 +84,9 @@ import org.peergos.util.Futures;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -97,7 +106,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -117,9 +125,11 @@ import peergos.server.net.SyncConfigHandler;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.storage.auth.JdbcBatCave;
+import peergos.server.sync.PairLogger;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
+import peergos.server.util.Logging;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
@@ -208,6 +218,188 @@ public class MainActivity extends AppCompatActivity {
     @JavascriptInterface
     public void notifyDirectoryRequest() {
         wantsDirectory = true;
+    }
+
+    /** Launch the system Files app rooted at the Peergos SAF DocumentsProvider so the
+     *  WebView's "Open in file explorer" button has somewhere meaningful to go on
+     *  Android (there's no filesystem mount path here — the mount is the SAF root). */
+    /** Bundle the rotated peergos.&lt;N&gt;.log files in PEERGOS_PATH (up to 10, written by
+     *  java.util.logging.FileHandler with pattern "peergos.%g.log") into a single text
+     *  file and drop it in the user's Downloads folder via MediaStore. */
+    @JavascriptInterface
+    public void downloadLogs() {
+        new Thread(() -> {
+            try {
+                File dir = getFilesDir();
+                File[] candidates = dir.listFiles((d, name) ->
+                        name.startsWith("peergos.") && name.endsWith(".log"));
+                if (candidates == null || candidates.length == 0) {
+                    runOnUiThread(() -> Toast.makeText(this, "No logs found", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                // FileHandler keeps the active file at generation 0 and increments older
+                // rotations, so sort highest-generation first to write oldest→newest.
+                List<File> ordered = new ArrayList<>(Arrays.asList(candidates));
+                ordered.sort((a, b) -> logGeneration(b.getName()) - logGeneration(a.getName()));
+                if (ordered.size() > 10)
+                    ordered = ordered.subList(0, 10);
+
+                String fileName = "peergos-logs-" + System.currentTimeMillis() + ".log";
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Could not create download file", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    byte[] buf = new byte[64 * 1024];
+                    for (File f : ordered) {
+                        out.write(("==== " + f.getName() + " ====\n")
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        try (FileInputStream in = new FileInputStream(f)) {
+                            int r;
+                            while ((r = in.read(buf)) > 0)
+                                out.write(buf, 0, r);
+                        }
+                        out.write('\n');
+                    }
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Logs saved to Downloads/" + fileName, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Failed to download logs: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    @JavascriptInterface
+    public void downloadSyncLog(String label) {
+        new Thread(() -> {
+            try {
+                Path peergosDir = Paths.get(getFilesDir().getAbsolutePath());
+                Path configPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+                if (! Files.exists(configPath)) {
+                    runOnUiThread(() -> Toast.makeText(this, "No sync config found", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                Map<String, Object> json = (Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(configPath)));
+                List<Map<String, Object>> pairs = (List<Map<String, Object>>) json.get("pairs");
+                Map<String, Object> match = null;
+                for (Map<String, Object> p : pairs) {
+                    String link = (String) p.get("link");
+                    String pairLabel = link.substring(link.lastIndexOf("/", link.indexOf("#")) + 1, link.indexOf("#"));
+                    if (pairLabel.equals(label)) {
+                        match = p;
+                        break;
+                    }
+                }
+                if (match == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Unknown sync label", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                String linkPath = (String) match.get("remotepath");
+                String localDir = (String) match.get("localpath");
+                String hash = PairLogger.hash(linkPath, localDir);
+                Path rotated = PairLogger.rotatedLogPath(peergosDir, hash);
+                Path current = PairLogger.currentLogPath(peergosDir, hash);
+                if (! Files.exists(rotated) && ! Files.exists(current)) {
+                    runOnUiThread(() -> Toast.makeText(this, "No sync log yet for this pair", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+
+                String fileName = "sync-" + label + "-" + System.currentTimeMillis() + ".log";
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Could not create download file", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    if (Files.exists(rotated))
+                        Files.copy(rotated, out);
+                    if (Files.exists(current))
+                        Files.copy(current, out);
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Sync log saved to Downloads/" + fileName, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Failed to download sync log: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
+    /** One-shot prompt on the user's first sync: ask them to whitelist Peergos in
+     *  battery optimisation so the system doesn't suspend background sync. */
+    private void maybePromptBatteryOptimization() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName()))
+            return;
+        SharedPreferences prefs = getSharedPreferences("peergos-prefs", MODE_PRIVATE);
+        if (prefs.getBoolean("battery-opt-dismissed", false))
+            return;
+        new AlertDialog.Builder(this)
+                .setTitle("Keep syncing in the background")
+                .setMessage("Android may pause Peergos while your screen is off, which can stop syncs from completing. " +
+                        "Allowing Peergos to ignore battery optimisation lets sync keep running until it finishes. " +
+                        "You can change this later in system settings.")
+                .setPositiveButton("Allow", (d, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:" + getPackageName())));
+                    } catch (ActivityNotFoundException notFound) {
+                        startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                    }
+                })
+                .setNegativeButton("Not now", (d, w) ->
+                        prefs.edit().putBoolean("battery-opt-dismissed", true).apply())
+                .show();
+    }
+
+    private static int logGeneration(String name) {
+        try {
+            int dot1 = name.indexOf('.') + 1;
+            int dot2 = name.indexOf('.', dot1);
+            return Integer.parseInt(name.substring(dot1, dot2));
+        } catch (Exception e) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    @JavascriptInterface
+    public void openMountInFiles() {
+        runOnUiThread(() -> {
+            String username = PeergosSession.context().map(c -> c.username).orElse(null);
+            if (username == null) {
+                Toast.makeText(this, "Sign in to open Peergos files", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Uri rootUri = DocumentsContract.buildRootUri(DocumentsProviderBackend.AUTHORITY, username);
+            // android.provider.action.BROWSE is the canonical way to open DocumentsUI
+            // at a specific root; ACTION_VIEW is the fallback for OEM file apps that
+            // don't register BROWSE.
+            Intent browse = new Intent("android.provider.action.BROWSE")
+                    .setDataAndType(rootUri, "vnd.android.document/root")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            try {
+                startActivity(browse);
+            } catch (ActivityNotFoundException notFound) {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW)
+                            .setDataAndType(rootUri, "vnd.android.document/root")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));
+                } catch (ActivityNotFoundException stillNotFound) {
+                    Toast.makeText(this, "No file explorer app installed", Toast.LENGTH_LONG).show();
+                }
+            }
+        });
     }
 
 
@@ -1035,8 +1227,10 @@ public class MainActivity extends AppCompatActivity {
             Data syncArgs = new Data.Builder()
                     .putString("PEERGOS_PATH", peergosDir.toString())
                     .build();
+            // Use CONNECTED rather than UNMETERED because allow-on-mobile is per-pair;
+            // SyncWorker checks the current network metered-ness and filters pairs.
             Constraints periodic = new Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.UNMETERED)
+                .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(true)
                 .setRequiresStorageNotLow(true)
                 .build();
@@ -1050,31 +1244,53 @@ public class MainActivity extends AppCompatActivity {
 //                            .setExecutor(Executors.newFixedThreadPool(1))
 //                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
+            Path syncConfigPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
             SyncRunner syncer = new SyncRunner() {
-                private static final String periodicUuid = "fe64ee2f-a2a2-4dab-96d8-0aec9475541f";
-
                 @Override
                 public void start() {
+                    // start() is invoked by SyncConfigHandler after a pair has been
+                    // written to disk; a count of 1 means this is the first pair on
+                    // this install (or the first since the user removed everything).
+                    if (readPairCount() == 1)
+                        runOnUiThread(MainActivity.this::maybePromptBatteryOptimization);
                     runNow();
-                    backgroundWork.enqueue(new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
-                            .setConstraints(periodic)
-                            .setId(UUID.fromString(periodicUuid))
-                            .setInputData(syncArgs).setInitialDelay(Duration.of(1, ChronoUnit.MINUTES))
-                            .build());
+                    // UPDATE so constraint changes (e.g. the UNMETERED → CONNECTED switch
+                    // to enable per-pair mobile-data sync) take effect on upgrade without
+                    // resetting the periodic schedule.
+                    backgroundWork.enqueueUniquePeriodicWork("peergos-sync",
+                            ExistingPeriodicWorkPolicy.UPDATE,
+                            new PeriodicWorkRequest.Builder(SyncWorker.class, 15, TimeUnit.MINUTES)
+                                    .setConstraints(periodic)
+                                    .setInputData(syncArgs)
+                                    .setInitialDelay(Duration.of(1, ChronoUnit.MINUTES))
+                                    .build());
                 }
 
                 @Override
                 public void runNow() {
-                    backgroundWork.enqueue(new OneTimeWorkRequest.Builder(SyncWorker.class)
-                            .setConstraints(once)
-                            .setId(UUID.randomUUID())
-                            .setInputData(syncArgs)
-                            .build());
+                    // Hand the long-running drain to SyncService — the WebView click /
+                    // Activity callback that triggered this path counts as foreground
+                    // so the BG-FGS restriction doesn't apply.
+                    ContextCompat.startForegroundService(MainActivity.this,
+                            new Intent(MainActivity.this, SyncService.class));
                 }
 
                 @Override
                 public StatusHolder getStatusHolder() {
                     return SyncWorker.status;
+                }
+
+                private int readPairCount() {
+                    try {
+                        if (! syncConfigPath.toFile().exists())
+                            return 0;
+                        Map<String, Object> json = (Map<String, Object>) JSONParser.parse(
+                                new String(Files.readAllBytes(syncConfigPath)));
+                        List<?> pairs = (List<?>) json.get("pairs");
+                        return pairs == null ? 0 : pairs.size();
+                    } catch (IOException e) {
+                        return -1;
+                    }
                 }
             };
 
@@ -1089,12 +1305,14 @@ public class MainActivity extends AppCompatActivity {
             Optional<UserService.LocalAppProperties> localAppProps = Optional.of(new UserService.LocalAppProperties(peergosDir, serverUrl));
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps);
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps,
+                    PeergosSession.mountHandler());
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
             List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
             int connectionBacklog = 50;
             int handlerPoolSize = 4;
+            Logging.init(a);
             server.initAndStart(localAPIAddress, Arrays.asList(), Optional.empty(), Optional.empty(),
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,

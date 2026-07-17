@@ -1,0 +1,136 @@
+name: Android sync
+on: [push]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [30, 35]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Ant
+        run: sudo apt-get update && sudo apt-get install -y ant
+
+      - name: Build host Peergos fat jar
+        run: cd web-ui && ant dist
+
+      - name: Enable KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm not present on this runner"
+            exit 1
+          fi
+          sudo chmod 666 /dev/kvm
+          ls -la /dev/kvm
+
+      - name: Start Peergos server on host
+        run: |
+          export PEERGOS_HOST_DIR=$(mktemp -d)
+          nohup java -jar web-ui/server/Peergos.jar pki-init \
+            -port 8000 \
+            -proxy-target /ip4/127.0.0.1/tcp/5556 \
+            -gateway-port 8090 \
+            -ipfs-api-address /ip4/127.0.0.1/tcp/5001 \
+            -ipfs-gateway-address /ip4/127.0.0.1/tcp/8080 \
+            -ipfs-swarm-port 4001 \
+            -ipfs.metrics.port 6001 \
+            -useIPFS false \
+            -listen-host 0.0.0.0 \
+            -admin-usernames peergos \
+            -logToConsole true \
+            -enable-gc false \
+            -default-quota 10737418240 \
+            -quota-upload-limit-seconds 1 \
+            max-users 10000 \
+            max-daily-signups 20000 \
+            PEERGOS_PATH "$PEERGOS_HOST_DIR" \
+            peergos.password testpassword \
+            pki.keygen.password testpkipassword \
+            pki.keyfile.password testpassword > peergos-host.log 2>&1 &
+          echo $! > peergos-host.pid
+          echo "Waiting for server to come up..."
+          for i in $(seq 1 180); do
+            if ! kill -0 $(cat peergos-host.pid) 2>/dev/null; then
+              echo "::error::peergos server exited early"
+              tail -50 peergos-host.log
+              exit 1
+            fi
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 2 http://localhost:8000/ || echo 000)
+            if [ "$code" != "000" ]; then
+              echo "Server ready (HTTP $code) after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::peergos server did not respond on :8000 within 180s"
+          tail -80 peergos-host.log
+          exit 1
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ matrix.api-level }}
+
+      - name: Create AVD and generate snapshot for caching
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: ${{ matrix.api-level == 30 && 'google_apis' || 'default' }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 8192
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        timeout-minutes: 60
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: ${{ matrix.api-level == 30 && 'google_apis' || 'default' }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 8192
+          disable-animations: true
+          script: |
+            adb logcat -c
+            adb logcat -v threadtime > logcat.txt &
+            LOGCAT_PID=$!
+            set +e
+            ./gradlew connectedDebugAndroidTest --info -Pandroid.testInstrumentationRunnerArguments.peergosHost=10.0.2.2 -Pandroid.testInstrumentationRunnerArguments.peergosPort=8000
+            STATUS=$?
+            kill $LOGCAT_PID 2>/dev/null || true
+            exit $STATUS
+
+      - name: Stop Peergos server
+        if: always()
+        run: |
+          if [ -f peergos-host.pid ]; then
+            kill $(cat peergos-host.pid) 2>/dev/null || true
+          fi
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports-api${{ matrix.api-level }}
+          path: |
+            app/build/reports/androidTests/connected/**
+            app/build/outputs/androidTest-results/connected/**
+            logcat.txt
+            peergos-host.log

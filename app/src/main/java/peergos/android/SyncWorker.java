@@ -1,18 +1,12 @@
 package peergos.android;
 
-import static android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
-
-import android.app.Notification;
 import android.content.Context;
-import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 
 import androidx.annotation.NonNull;
-import androidx.core.app.ActivityCompat;
-import androidx.core.app.NotificationCompat;
-import androidx.core.app.NotificationManagerCompat;
-import androidx.work.Data;
-import androidx.work.ForegroundInfo;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -24,12 +18,15 @@ import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import peergos.server.Builder;
 import peergos.server.JdbcPkiCache;
@@ -41,6 +38,7 @@ import peergos.server.sync.DirectorySync;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
 import peergos.server.util.Args;
+import peergos.server.util.Logging;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.OnlineState;
@@ -57,46 +55,31 @@ import peergos.shared.user.HttpPoster;
 
 public class SyncWorker extends Worker {
     public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
+    private static final Logger LOG = Logging.LOG();
 
     public static final Object lock = new Object();
-    private final WorkerParameters params;
     public SyncWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
         super(context, workerParams);
-        this.params = workerParams;
-    }
-
-    @NonNull
-    @Override
-    public ForegroundInfo getForegroundInfo() {
-        return buildForegroundInfo("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
-    }
-
-    private ForegroundInfo buildForegroundInfo(String title, String text, int notificationId, int priority) {
-        Notification notif = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setOngoing(true)
-                .setPriority(priority)
-                .build();
-        return new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC);
     }
 
     @NonNull
     @Override
     public Result doWork() {
-        setForegroundAsync(getForegroundInfo());
+        Path peergosDir = Paths.get(getInputData().getString("PEERGOS_PATH"));
+        return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.failure();
+    }
+
+    /**
+     * Run a single sync pass to completion (or first error). Holds the global sync lock
+     * so it cooperates with SyncService and other periodic invocations — at most one
+     * sync runs at a time across the process.
+     *
+     * @return true on clean completion, false on UnknownHostException / fatal failure
+     */
+    public static boolean runSyncOnce(Context context, Path peergosDir) {
         synchronized (lock) {
             try {
                 System.out.println("SYNC: starting work");
-                showNotification("Sync", "Sync in progress...", MainActivity.SYNC_NOTIFICATION_ID, NotificationCompat.PRIORITY_MIN);
-                Data params = this.params.getInputData();
-                int sleepMillis = params.getInt("sleep", 0);
-                try {
-                    Thread.sleep(sleepMillis);
-                } catch (InterruptedException ignored) {
-                }
-                Path peergosDir = Paths.get(params.getString("PEERGOS_PATH"));
                 Crypto crypto = Main.initCrypto(new ScryptAndroid());
                 Path oldConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
                 Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
@@ -110,7 +93,7 @@ public class SyncWorker extends Worker {
                         .with("PEERGOS_PATH", peergosDir.toString())
                         .with("pki-cache-sql-file", "pki-cache.sqlite");
 
-                URL target = new URL(args.getArg("peergos-url", "https://peergos.net"));
+                URL target = new URL(PeergosApp.readSavedServerUrl(peergosDir).orElse("https://peergos.net"));
                 HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
                 ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
                 CoreNode directCore = NetworkAccess.buildDirectCorenode(poster);
@@ -128,7 +111,7 @@ public class SyncWorker extends Worker {
                         crypto.hasher, Collections.emptyList(), false);
                 if (syncConfig.links.isEmpty()) {
                     System.out.println("No sync args");
-                    return Result.success();
+                    return true;
                 }
                 List<String> links = syncConfig.links;
                 List<String> localDirs = syncConfig.localDirs;
@@ -137,12 +120,39 @@ public class SyncWorker extends Worker {
                 int maxDownloadParallelism = syncConfig.maxDownloadParallelism;
                 int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
 
+                // On a metered (mobile) network, drop pairs that aren't allowed there.
+                // The periodic worker constraint is CONNECTED, not UNMETERED, so each
+                // pair's allowOnMobile flag is what gates mobile-data usage.
+                if (isMeteredNetwork(context)) {
+                    List<String> fLinks = new ArrayList<>();
+                    List<String> fLocalDirs = new ArrayList<>();
+                    List<Boolean> fSyncLocalDeletes = new ArrayList<>();
+                    List<Boolean> fSyncRemoteDeletes = new ArrayList<>();
+                    for (int i = 0; i < links.size(); i++) {
+                        if (syncConfig.allowOnMobile.get(i)) {
+                            fLinks.add(links.get(i));
+                            fLocalDirs.add(localDirs.get(i));
+                            fSyncLocalDeletes.add(syncLocalDeletes.get(i));
+                            fSyncRemoteDeletes.add(syncRemoteDeletes.get(i));
+                        }
+                    }
+                    if (fLinks.isEmpty()) {
+                        System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                        return true;
+                    }
+                    links = fLinks;
+                    localDirs = fLocalDirs;
+                    syncLocalDeletes = fSyncLocalDeletes;
+                    syncRemoteDeletes = fSyncRemoteDeletes;
+                }
+
                 DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                         maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
-                                getApplicationContext(), crypto), peergosDir,
+                                context, crypto), peergosDir,
                         status,
                         m -> {
                             status.setStatus(m);
+                            LOG.info(m);
                         },
                         e -> {
                             if (e != null) {
@@ -150,25 +160,36 @@ public class SyncWorker extends Worker {
                                 if (!(cause instanceof UnknownHostException)) {
                                     status.setError(cause.getMessage());
                                 }
+                                LOG.log(Level.WARNING, cause, cause::getMessage);
                             }
                         }, network, crypto);
+                return true;
             } catch (MalformedURLException e) {
                 e.printStackTrace();
+                return true;
             } catch (Exception e) {
-                if (getCause(e) instanceof UnknownHostException)
-                    return Result.failure();
-                String msg = e.getMessage();
-                if (msg != null && !msg.trim().isEmpty()) {
+                Throwable cause = getCause(e);
+                if (cause instanceof UnknownHostException)
+                    return false;
+                String msg = cause.getMessage();
+                if (msg != null && !msg.trim().isEmpty())
                     status.setError(msg);
-                    showNotification("Sync error", msg, MainActivity.SYNC_NOTIFICATION_ERROR_ID, NotificationCompat.PRIORITY_DEFAULT);
-                }
-                return Result.failure();
-            } finally {
-                closeNotification(MainActivity.SYNC_NOTIFICATION_ID);
+                LOG.log(Level.WARNING, cause, cause::getMessage);
+                return false;
             }
-
-            return Result.success();
         }
+    }
+
+    private static boolean isMeteredNetwork(Context context) {
+        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        Network active = cm.getActiveNetwork();
+        if (active == null) return false;
+        NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+        if (caps == null) return false;
+        // NET_CAPABILITY_NOT_METERED is set on Wi-Fi/Ethernet by default; mobile data
+        // and metered hotspots lack it.
+        return !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
     }
 
     private static Throwable getCause(Throwable t) {
@@ -182,38 +203,5 @@ public class SyncWorker extends Worker {
         if (t instanceof CompletionException)
             return getCause(cause);
         return cause;
-    }
-
-    public void closeNotification(int notificationId) {
-        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
-        mgr.cancel(notificationId);
-    }
-
-    public void showNotification(String title, String text, int notificationId, int priority) {
-        DirectorySync.log(text);
-//        Context context = getApplicationContext();
-        // This PendingIntent can be used to cancel the worker
-//        PendingIntent intent = WorkManager.getInstance(context)
-//                .createCancelPendingIntent(getId());
-
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(getApplicationContext(), MainActivity.SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setOngoing(true)
-                // Add the cancel action to the notification which can
-                // be used to cancel the worker
-//                .addAction(android.R.drawable.ic_delete, "Cancel", intent)
-                .setPriority(priority);
-
-        NotificationManagerCompat mgr = NotificationManagerCompat.from(getApplicationContext());
-        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
-                android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-        // notificationId is a unique int for each notification that you must define.
-        Notification notif = builder.build();
-        mgr.notify(notificationId, notif);
-        setForegroundAsync(new ForegroundInfo(notificationId, notif, FOREGROUND_SERVICE_TYPE_DATA_SYNC));
     }
 }

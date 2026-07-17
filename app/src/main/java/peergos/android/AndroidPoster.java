@@ -74,16 +74,17 @@ public class AndroidPoster implements HttpPoster {
             }
             if (basicAuth.isPresent())
                 conn.setRequestProperty("Authorization", basicAuth.get());
-            DataOutputStream dout = new DataOutputStream(conn.getOutputStream());
-
-            dout.write(payload);
-            dout.flush();
+            try (DataOutputStream dout = new DataOutputStream(conn.getOutputStream())) {
+                dout.write(payload);
+                dout.flush();
+            }
 
             String contentEncoding = conn.getContentEncoding();
             boolean isGzipped = "gzip".equals(contentEncoding);
-            DataInputStream din = new DataInputStream(isGzipped && unzip ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream());
-            byte[] resp = Serialize.readFully(din);
-            din.close();
+            byte[] resp;
+            try (DataInputStream din = new DataInputStream(isGzipped && unzip ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream())) {
+                resp = Serialize.readFully(din);
+            }
             res.complete(resp);
         } catch (SocketTimeoutException e) {
             res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
@@ -139,18 +140,18 @@ public class AndroidPoster implements HttpPoster {
             if (basicAuth.isPresent())
                 conn.setRequestProperty("Authorization", basicAuth.get());
             conn.setDoOutput(true);
-            OutputStream out = conn.getOutputStream();
-            out.write(body);
-            out.flush();
-            out.close();
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(body);
+                out.flush();
+            }
 
-            InputStream in = conn.getInputStream();
-            return Futures.of(Serialize.readFully(in));
+            try (InputStream in = conn.getInputStream()) {
+                return Futures.of(Serialize.readFully(in));
+            }
         } catch (IOException e) {
             CompletableFuture<byte[]> res = new CompletableFuture<>();
             if (conn != null) {
-                try {
-                    InputStream err = conn.getErrorStream();
+                try (InputStream err = conn.getErrorStream()) {
                     res.completeExceptionally(new IOException("HTTP " + conn.getResponseCode() + ": " + conn.getResponseMessage()));
                 } catch (IOException f) {
                     res.completeExceptionally(f);
@@ -196,8 +197,9 @@ public class AndroidPoster implements HttpPoster {
 
                 String contentEncoding = conn.getContentEncoding();
                 boolean isGzipped = "gzip".equals(contentEncoding);
-                DataInputStream din = new DataInputStream(isGzipped ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream());
-                return Serialize.readFully(din);
+                try (DataInputStream din = new DataInputStream(isGzipped ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream())) {
+                    return Serialize.readFully(din);
+                }
             } catch (SocketTimeoutException e) {
                 throw new RuntimeException("Timeout retrieving: " + url, e);
             } catch (IOException e) {

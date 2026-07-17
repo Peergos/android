@@ -24,9 +24,15 @@ public class AndroidAsyncReader implements AsyncReader {
     @Override
     public CompletableFuture<Integer> readIntoArray(byte[] bytes, int offset, int len) {
         try {
-            int read = fin.read(bytes, offset, len);
-            globalOffset.addAndGet(read);
-            return Futures.of(read);
+            int total = 0;
+            while (total < len) {
+                int read = fin.read(bytes, offset + total, len - total);
+                if (read <= 0) // EOF
+                    break;
+                total += read;
+            }
+            globalOffset.addAndGet(total);
+            return Futures.of(total);
         } catch (IOException e) {
             return Futures.errored(e);
         }
@@ -36,7 +42,20 @@ public class AndroidAsyncReader implements AsyncReader {
     public CompletableFuture<AsyncReader> seek(long offset) {
         if (offset >= globalOffset.get()) {
             try {
-                fin.skip(offset - globalOffset.get());
+                long toSkip = offset - globalOffset.get();
+                while (toSkip > 0) {
+                    long skipped = fin.skip(toSkip);
+                    if (skipped <= 0) {
+                        // skip() can under-skip (or return 0) for pipe / content-provider backed
+                        // streams; fall back to reading and discarding so we always advance fully.
+                        int chunk = (int) Math.min(toSkip, 1 << 16);
+                        int read = fin.read(new byte[chunk], 0, chunk);
+                        if (read < 0)
+                            throw new IOException("Reached EOF while seeking to " + offset);
+                        skipped = read;
+                    }
+                    toSkip -= skipped;
+                }
                 globalOffset.set(offset);
                 return Futures.of(this);
             } catch (IOException e) {
