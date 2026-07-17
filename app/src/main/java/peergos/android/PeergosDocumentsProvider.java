@@ -29,7 +29,6 @@ import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -39,6 +38,7 @@ import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.user.UserContext;
 import peergos.shared.user.fs.AsyncReader;
+import peergos.shared.user.fs.FileProperties;
 import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.Thumbnail;
@@ -412,10 +412,10 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
      *  don't re-fetch from the network.
      *
      *  Two pieces happen out-of-band on release: progress notification (updated per write
-     *  via the per-byte handle), and thumbnail regeneration (streams the post-write
-     *  content into a temp file, runs the image/video thumbnailer, writes back via
-     *  updateThumbnail). The latter is moved to {@code streamingPool} so we don't block
-     *  the system's FD-close path on a network read. */
+     *  via the per-byte handle), and metadata refresh (streams the post-write content into
+     *  a temp file, then re-derives the mimetype and image/video thumbnail from the real
+     *  bytes and commits them via setProperties). The latter is moved to {@code streamingPool}
+     *  so we don't block the system's FD-close path on a network read. */
     private static final class PeergosWriteProxyCallback extends ProxyFileDescriptorCallback {
         private final long initialSize;
         private final String parentId;
@@ -531,7 +531,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             postReleasePool.execute(() -> {
                 try {
                     if (wroteAnything && finalError == null)
-                        maybeRefreshThumbnail(finalFw, finalSize);
+                        refreshMetadataAfterWrite(finalFw, finalSize);
                     if (finalError == null) handle.finish();
                     else handle.fail(finalError);
                 } finally {
@@ -542,10 +542,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             });
         }
 
-        /** Pull the post-write content back into a temp file and re-run the
-         *  image/video thumbnailer the upload path used to use. No-op for large files
-         *  or non-media — {@link #generateThumbnail} already caps itself at 64 MiB. */
-        private void maybeRefreshThumbnail(FileWrapper finalFw, long finalSize) {
+        /** Pull the post-write content back into a temp file and fix up the metadata that
+         *  couldn't be derived at {@code createDocument} time, when the file was still empty:
+         *  the mimetype and the thumbnail. No-op for large files or non-media —
+         *  {@link #generateThumbnail} already caps itself at 64 MiB. */
+        private void refreshMetadataAfterWrite(FileWrapper finalFw, long finalSize) {
             if (finalSize == 0 || finalSize > 64L * 1024 * 1024) return;
             File temp = null;
             try {
@@ -562,15 +563,19 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                         remaining -= n;
                     }
                 }
+                String mime = calculateMimeType(temp, name);
                 Optional<Thumbnail> thumb = generateThumbnail(temp, name);
-                if (thumb.isPresent()) {
-                    Thumbnail t = thumb.get();
-                    String dataUrl = "data:" + t.mimeType + ";base64,"
-                            + Base64.getEncoder().encodeToString(t.data);
-                    finalFw.updateThumbnail(dataUrl, s.network).join();
-                }
+
+                FileProperties current = finalFw.getFileProperties();
+                boolean mimeChanged = mime != null && !mime.equals(current.mimeType);
+                if (!mimeChanged && !thumb.isPresent()) return;
+                FileProperties updated = new FileProperties(current.name, current.isDirectory, current.isLink,
+                        mimeChanged ? mime : current.mimeType, current.size, current.modified, current.created,
+                        current.isHidden, thumb.isPresent() ? thumb : current.thumbnail,
+                        current.streamSecret, current.treeHash);
+                finalFw.setProperties(updated, s.crypto.hasher, s.network, Optional.empty()).join();
             } catch (Exception e) {
-                Log.w(TAG, "post-write thumbnail refresh failed for " + name, e);
+                Log.w(TAG, "post-write metadata refresh failed for " + name, e);
             } finally {
                 if (temp != null) try { Files.deleteIfExists(temp.toPath()); } catch (IOException ignored) {}
             }
@@ -582,7 +587,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         return m != null && (m.contains("EPIPE") || m.contains("Broken pipe"));
     }
 
-    private static Optional<Thumbnail> generateThumbnail(File temp, String name) {
+    private static String calculateMimeType(File temp, String name) {
         try {
             byte[] head = new byte[Math.min((int) temp.length(), MimeTypes.HEADER_BYTES_TO_IDENTIFY_MIME_TYPE)];
             try (java.io.InputStream in = new java.io.FileInputStream(temp)) {
@@ -593,7 +598,17 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                     got += n;
                 }
             }
-            String mime = MimeTypes.calculateMimeType(head, name);
+            return MimeTypes.calculateMimeType(head, name);
+        } catch (Exception e) {
+            Log.w(TAG, "mimetype detection failed for " + name, e);
+            return null;
+        }
+    }
+
+    private static Optional<Thumbnail> generateThumbnail(File temp, String name) {
+        try {
+            String mime = calculateMimeType(temp, name);
+            if (mime == null) return Optional.empty();
             if (mime.startsWith("image/")) {
                 long len = temp.length();
                 if (len > 64L * 1024 * 1024) return Optional.empty();
