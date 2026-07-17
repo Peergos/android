@@ -10,7 +10,7 @@ android {
         applicationId = "peergos.android"
         minSdk = 30
         targetSdk = 35
-        versionCode = 57
+        versionCode = 58
         versionName = "1.30.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
