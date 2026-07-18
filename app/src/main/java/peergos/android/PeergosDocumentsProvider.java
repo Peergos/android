@@ -31,6 +31,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -38,8 +39,8 @@ import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
 import peergos.shared.user.UserContext;
 import peergos.shared.user.fs.AsyncReader;
-import peergos.shared.user.fs.FileProperties;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.user.fs.ThumbnailGenerator;
@@ -65,6 +66,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         t.setDaemon(true);
         return t;
     });
+
+    /** Documents created empty by {@link #createDocument} and not yet written. The first
+     *  write to one replaces it outright rather than overwriting, which is both cheaper and
+     *  the only way its mimetype and thumbnail get derived from real content. */
+    private final Set<String> freshlyCreated = ConcurrentHashMap.newKeySet();
 
     private volatile UploadProgressNotifier progressNotifier;
 
@@ -225,11 +231,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         }
         // Only a non-truncating open needs the existing bytes staged before the first write.
         boolean needsPrefill = !truncateMode && fw.getSize() > 0;
+        // An empty file we just made ourselves is a placeholder, not content worth preserving.
+        boolean createdHere = existingOpt.isEmpty() || freshlyCreated.remove(documentId);
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
                     new PeergosWriteProxyCallback(fw, fw.getSize(), parentId, name, s, thread,
-                            appCtx, appCtx.getContentResolver(), streamingPool, handle, staging, needsPrefill),
+                            appCtx, appCtx.getContentResolver(), streamingPool, handle, staging,
+                            needsPrefill, createdHere),
                     new Handler(thread.getLooper()));
         } catch (IOException e) {
             thread.quitSafely();
@@ -279,7 +288,10 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             throw rethrowAsFnf("createDocument", e);
         }
         notifyParent(parentDocumentId);
-        return joinPath(parentDocumentId, displayName);
+        String documentId = joinPath(parentDocumentId, displayName);
+        if (!Document.MIME_TYPE_DIR.equals(mimeType))
+            freshlyCreated.add(documentId);
+        return documentId;
     }
 
     @Override
@@ -437,6 +449,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final File staging;
         private final FileWrapper fw;
         private final boolean needsPrefill;
+        private final boolean createdHere;
         private RandomAccessFile raf;
         private long size;
         private boolean dirty;
@@ -446,7 +459,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
                                   UploadProgressNotifier.Handle handle, File staging,
-                                  boolean needsPrefill) {
+                                  boolean needsPrefill, boolean createdHere) {
             this.fw = fw;
             this.size = size;
             this.parentId = parentId;
@@ -459,6 +472,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             this.handle = handle;
             this.staging = staging;
             this.needsPrefill = needsPrefill;
+            this.createdHere = createdHere;
         }
 
         /** Opens the staging file, and for a non-truncating open pulls the existing content
@@ -562,20 +576,42 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         }
 
         private void uploadStaged(long finalSize) {
-            FileWrapper parent = s.context.getByPath(parentId).join()
+            if (createdHere) uploadAsNewFile(finalSize);
+            else overwriteExistingFile(finalSize);
+        }
+
+        private void uploadAsNewFile(long finalSize) {
+            String documentId = joinPath(parentId, name);
+            Optional<FileWrapper> placeholder = s.context.getByPath(documentId).join();
+            if (placeholder.isPresent())
+                placeholder.get().remove(parent(), PathUtil.get(documentId), s.context).join();
+
+            Optional<Thumbnail> thumb = generateThumbnail(staging, name);
+            HashTree hash = withStagingReader(r ->
+                    HashTree.build(r, (int) (finalSize >>> 32), (int) finalSize, s.crypto.hasher).join());
+            withStagingReader(r -> parent().uploadFileWithHash(name, r, finalSize, Optional.of(hash),
+                    Optional.empty(), thumb, s.network, s.crypto, handle::onBytes).join());
+        }
+
+        /** Overwrite of a file that already existed before this open: keep the existing
+         *  child so its capability — and anything shared from it — survives. */
+        private void overwriteExistingFile(long finalSize) {
+            withStagingReader(r -> parent().uploadFileSection(name, r, false, 0, finalSize,
+                    Optional.empty(), true, s.network, s.crypto, () -> false, handle::onBytes).join());
+        }
+
+        private FileWrapper parent() {
+            return s.context.getByPath(parentId).join()
                     .orElseThrow(() -> new IllegalStateException("Parent vanished: " + parentId));
-            AsyncReader reader = stagingReader();
+        }
+
+        private <T> T withStagingReader(java.util.function.Function<AsyncReader, T> f) {
+            AsyncReader reader = new AndroidAsyncReader(openStaging(), this::openStaging);
             try {
-                parent.uploadFileSection(name, reader, false, 0, finalSize, Optional.empty(), true,
-                        s.network, s.crypto, () -> false, handle::onBytes).join();
+                return f.apply(reader);
             } finally {
                 try { reader.close(); } catch (Exception ignored) {}
             }
-            addVideoThumbnail();
-        }
-
-        private AsyncReader stagingReader() {
-            return new AndroidAsyncReader(openStaging(), this::openStaging);
         }
 
         private java.io.FileInputStream openStaging() {
@@ -584,20 +620,6 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             } catch (FileNotFoundException e) {
                 throw new RuntimeException(e);
             }
-        }
-
-        private void addVideoThumbnail() {
-            String mime = calculateMimeType(staging, name);
-            if (mime == null || !mime.startsWith("video/")) return;
-            Optional<Thumbnail> thumb = MainActivity.generateVideoThumbnail(staging);
-            if (thumb.isEmpty()) return;
-            Optional<FileWrapper> uploaded = s.context.getByPath(joinPath(parentId, name)).join();
-            if (uploaded.isEmpty()) return;
-            FileProperties current = uploaded.get().getFileProperties();
-            FileProperties updated = new FileProperties(current.name, current.isDirectory, current.isLink,
-                    current.mimeType, current.size, current.modified, current.created,
-                    current.isHidden, thumb, current.streamSecret, current.treeHash);
-            uploaded.get().setSameNameProperties(updated, s.network).join();
         }
     }
 
@@ -621,6 +643,23 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         } catch (Exception e) {
             Log.w(TAG, "mimetype detection failed for " + name, e);
             return null;
+        }
+    }
+
+    private static Optional<Thumbnail> generateThumbnail(File staged, String name) {
+        try {
+            String mime = calculateMimeType(staged, name);
+            if (mime == null) return Optional.empty();
+            if (mime.startsWith("image/")) {
+                if (staged.length() > 64L * 1024 * 1024) return Optional.empty();
+                return ThumbnailGenerator.get().generateThumbnail(Files.readAllBytes(staged.toPath()));
+            }
+            if (mime.startsWith("video/"))
+                return MainActivity.generateVideoThumbnail(staged);
+            return Optional.empty();
+        } catch (Exception e) {
+            Log.w(TAG, "thumbnail generation failed for " + name, e);
+            return Optional.empty();
         }
     }
 
