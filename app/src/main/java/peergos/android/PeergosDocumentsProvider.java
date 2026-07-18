@@ -25,10 +25,10 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Arrays;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -42,6 +42,7 @@ import peergos.shared.user.fs.FileProperties;
 import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.Thumbnail;
+import peergos.shared.user.fs.ThumbnailGenerator;
 import peergos.shared.util.PathUtil;
 
 public class PeergosDocumentsProvider extends DocumentsProvider {
@@ -80,6 +81,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
     @Override
     public boolean onCreate() {
+        ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
+        ThumbnailGenerator.setVideoInstance(MainActivity::generateVideoThumbnail);
         return true;
     }
 
@@ -211,17 +214,28 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         // Indeterminate progress: the editor decides the total size as it writes, so we
         // don't know it up front. start(name, 0) renders an indeterminate bar.
         UploadProgressNotifier.Handle handle = progressNotifier().start(name, 0);
-        File cacheDir = appCtx.getCacheDir();
+        File staging;
+        try {
+            staging = File.createTempFile("peergos-write-", ".tmp", appCtx.getCacheDir());
+        } catch (IOException e) {
+            thread.quitSafely();
+            StreamingForegroundService.release(appCtx);
+            handle.fail("could not stage write");
+            throw rethrowAsFnf("staging file for " + documentId, e);
+        }
+        // Only a non-truncating open needs the existing bytes staged before the first write.
+        boolean needsPrefill = !truncateMode && fw.getSize() > 0;
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
                     new PeergosWriteProxyCallback(fw, fw.getSize(), parentId, name, s, thread,
-                            appCtx, appCtx.getContentResolver(), streamingPool, handle, cacheDir),
+                            appCtx, appCtx.getContentResolver(), streamingPool, handle, staging, needsPrefill),
                     new Handler(thread.getLooper()));
         } catch (IOException e) {
             thread.quitSafely();
             StreamingForegroundService.release(appCtx);
             handle.fail(e.getMessage() != null ? e.getMessage() : "open failed");
+            try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
             throw rethrowAsFnf("openProxyFileDescriptor " + documentId, e);
         }
     }
@@ -405,19 +419,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         }
     }
 
-    /** Read-write proxy callback. Each onWrite commits a single {@code overwriteSection}
-     *  transaction against the current FileWrapper, which is then replaced with the
-     *  returned version so the next write builds on top. Peergos chunk caching means
-     *  edits within an already-touched chunk (very common for small files / first chunk)
-     *  don't re-fetch from the network.
+    /** Read-write proxy callback. Writes land in a staging file in the cache dir, and the
+     *  whole thing is uploaded once on release via the normal {@code uploadFileSection}
+     *  path — the same one in-app uploads use.
      *
-     *  Two pieces happen out-of-band on release: progress notification (updated per write
-     *  via the per-byte handle), and metadata refresh (streams the post-write content into
-     *  a temp file, then re-derives the mimetype and image/video thumbnail from the real
-     *  bytes and commits them via setProperties). The latter is moved to {@code streamingPool}
-     *  so we don't block the system's FD-close path on a network read. */
+     *  The upload runs on {@code postReleasePool} so the FD-close path doesn't block on
+     *  network I/O; the foreground service stays acquired until it completes. */
     private static final class PeergosWriteProxyCallback extends ProxyFileDescriptorCallback {
-        private final long initialSize;
         private final String parentId;
         private final String name;
         private final Session s;
@@ -426,21 +434,21 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final ContentResolver cr;
         private final ExecutorService postReleasePool;
         private final UploadProgressNotifier.Handle handle;
-        private final File cacheDir;
-        private FileWrapper fw;
+        private final File staging;
+        private final FileWrapper fw;
+        private final boolean needsPrefill;
+        private RandomAccessFile raf;
         private long size;
-        private AsyncReader reader;
-        private long pos;
         private boolean dirty;
         private String writeError;
 
         PeergosWriteProxyCallback(FileWrapper fw, long size, String parentId, String name,
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
-                                  UploadProgressNotifier.Handle handle, File cacheDir) {
+                                  UploadProgressNotifier.Handle handle, File staging,
+                                  boolean needsPrefill) {
             this.fw = fw;
             this.size = size;
-            this.initialSize = size;
             this.parentId = parentId;
             this.name = name;
             this.s = s;
@@ -449,12 +457,37 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             this.cr = cr;
             this.postReleasePool = postReleasePool;
             this.handle = handle;
-            this.cacheDir = cacheDir;
+            this.staging = staging;
+            this.needsPrefill = needsPrefill;
+        }
+
+        /** Opens the staging file, and for a non-truncating open pulls the existing content
+         *  down into it first. Deferred to the first callback so that network read happens on
+         *  our handler thread rather than the binder thread that called openDocument. */
+        private RandomAccessFile staged() throws IOException {
+            if (raf != null) return raf;
+            raf = new RandomAccessFile(staging, "rw");
+            if (needsPrefill) {
+                long remaining = size;
+                try (AsyncReader r = fw.getInputStream(s.network, s.crypto, size, p -> {}).join()) {
+                    byte[] buf = new byte[64 * 1024];
+                    while (remaining > 0) {
+                        int toRead = (int) Math.min(buf.length, remaining);
+                        int n = r.readIntoArray(buf, 0, toRead).join();
+                        if (n <= 0) break;
+                        raf.write(buf, 0, n);
+                        remaining -= n;
+                    }
+                }
+                if (remaining > 0)
+                    throw new IOException("Short read staging " + name + ": " + remaining + " bytes missing");
+            }
+            return raf;
         }
 
         @Override
         public long onGetSize() {
-            return initialSize;
+            return size;
         }
 
         @Override
@@ -462,26 +495,17 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             if (offset >= size) return 0;
             int toRead = (int) Math.min(len, size - offset);
             try {
-                if (reader == null) {
-                    reader = fw.getInputStream(s.network, s.crypto, size, p -> {}).join();
-                    pos = 0;
-                }
-                if (offset != pos) {
-                    reader = reader.seek(offset).join();
-                    pos = offset;
-                }
+                RandomAccessFile f = staged();
+                f.seek(offset);
                 int total = 0;
                 while (total < toRead) {
-                    int n = reader.readIntoArray(data, total, toRead - total).join();
+                    int n = f.read(data, total, toRead - total);
                     if (n <= 0) break;
                     total += n;
-                    pos += n;
                 }
                 return total;
             } catch (Exception e) {
                 Log.w(TAG, "write-proxy onRead failed at offset=" + offset + " len=" + len, e);
-                try { if (reader != null) reader.close(); } catch (Exception ignored) {}
-                reader = null;
                 throw new ErrnoException("onRead", OsConstants.EIO);
             }
         }
@@ -489,20 +513,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
             try {
-                byte[] copy = Arrays.copyOf(data, len);
-                long endIdx = offset + len;
-                fw = fw.overwriteSectionJS(
-                        AsyncReader.build(copy),
-                        (int) (offset >>> 32), (int) offset,
-                        (int) (endIdx >>> 32), (int) endIdx,
-                        Optional.empty(), s.network, s.crypto, p -> {}
-                ).join();
-                if (endIdx > size) size = endIdx;
+                RandomAccessFile f = staged();
+                f.seek(offset);
+                f.write(data, 0, len);
+                if (offset + len > size) size = offset + len;
                 dirty = true;
-                handle.onBytes(len);
-                // Cached read stream is now stale — drop it so the next onRead sees the new state.
-                try { if (reader != null) reader.close(); } catch (Exception ignored) {}
-                reader = null;
                 return len;
             } catch (Exception e) {
                 Log.w(TAG, "onWrite failed at offset=" + offset + " len=" + len, e);
@@ -513,28 +528,32 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
         @Override
         public void onFsync() {
-            // Each onWrite already commits; nothing extra to flush.
+            // Nothing reaches Peergos until release, so there is nothing to flush.
         }
 
         @Override
         public void onRelease() {
-            try { if (reader != null) reader.close(); } catch (Exception ignored) {}
-            reader = null;
+            try { if (raf != null) raf.close(); } catch (Exception ignored) {}
+            raf = null;
             thread.quitSafely();
-            // Thumbnail regeneration + progress finalisation runs off-thread so the FUSE
-            // close path doesn't block on network I/O; the foreground service stays
-            // acquired until that task completes.
-            final FileWrapper finalFw = fw;
             final long finalSize = size;
             final boolean wroteAnything = dirty;
-            final String finalError = writeError;
+            final String openError = writeError;
             postReleasePool.execute(() -> {
+                String error = openError;
                 try {
-                    if (wroteAnything && finalError == null)
-                        refreshMetadataAfterWrite(finalFw, finalSize);
-                    if (finalError == null) handle.finish();
-                    else handle.fail(finalError);
+                    if (wroteAnything && error == null) {
+                        try {
+                            uploadStaged(finalSize);
+                        } catch (Exception e) {
+                            Log.w(TAG, "upload of " + name + " failed", e);
+                            error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                        }
+                    }
+                    if (error == null) handle.finish();
+                    else handle.fail(error);
                 } finally {
+                    try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
                     cr.notifyChange(DocumentsContract.buildChildDocumentsUri(
                             DocumentsProviderBackend.AUTHORITY, parentId), null);
                     StreamingForegroundService.release(appCtx);
@@ -542,43 +561,43 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             });
         }
 
-        /** Pull the post-write content back into a temp file and fix up the metadata that
-         *  couldn't be derived at {@code createDocument} time, when the file was still empty:
-         *  the mimetype and the thumbnail. No-op for large files or non-media —
-         *  {@link #generateThumbnail} already caps itself at 64 MiB. */
-        private void refreshMetadataAfterWrite(FileWrapper finalFw, long finalSize) {
-            if (finalSize == 0 || finalSize > 64L * 1024 * 1024) return;
-            File temp = null;
+        private void uploadStaged(long finalSize) {
+            FileWrapper parent = s.context.getByPath(parentId).join()
+                    .orElseThrow(() -> new IllegalStateException("Parent vanished: " + parentId));
+            AsyncReader reader = stagingReader();
             try {
-                temp = File.createTempFile("peergos-thumb-", ".tmp", cacheDir);
-                try (AsyncReader r = finalFw.getInputStream(s.network, s.crypto, finalSize, p -> {}).join();
-                     java.io.FileOutputStream out = new java.io.FileOutputStream(temp)) {
-                    byte[] buf = new byte[64 * 1024];
-                    long remaining = finalSize;
-                    while (remaining > 0) {
-                        int toRead = (int) Math.min(buf.length, remaining);
-                        int n = r.readIntoArray(buf, 0, toRead).join();
-                        if (n <= 0) break;
-                        out.write(buf, 0, n);
-                        remaining -= n;
-                    }
-                }
-                String mime = calculateMimeType(temp, name);
-                Optional<Thumbnail> thumb = generateThumbnail(temp, name);
-
-                FileProperties current = finalFw.getFileProperties();
-                boolean mimeChanged = mime != null && !mime.equals(current.mimeType);
-                if (!mimeChanged && !thumb.isPresent()) return;
-                FileProperties updated = new FileProperties(current.name, current.isDirectory, current.isLink,
-                        mimeChanged ? mime : current.mimeType, current.size, current.modified, current.created,
-                        current.isHidden, thumb.isPresent() ? thumb : current.thumbnail,
-                        current.streamSecret, current.treeHash);
-                finalFw.setProperties(updated, s.crypto.hasher, s.network, Optional.empty()).join();
-            } catch (Exception e) {
-                Log.w(TAG, "post-write metadata refresh failed for " + name, e);
+                parent.uploadFileSection(name, reader, false, 0, finalSize, Optional.empty(), true,
+                        s.network, s.crypto, () -> false, handle::onBytes).join();
             } finally {
-                if (temp != null) try { Files.deleteIfExists(temp.toPath()); } catch (IOException ignored) {}
+                try { reader.close(); } catch (Exception ignored) {}
             }
+            addVideoThumbnail();
+        }
+
+        private AsyncReader stagingReader() {
+            return new AndroidAsyncReader(openStaging(), this::openStaging);
+        }
+
+        private java.io.FileInputStream openStaging() {
+            try {
+                return new java.io.FileInputStream(staging);
+            } catch (FileNotFoundException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        private void addVideoThumbnail() {
+            String mime = calculateMimeType(staging, name);
+            if (mime == null || !mime.startsWith("video/")) return;
+            Optional<Thumbnail> thumb = MainActivity.generateVideoThumbnail(staging);
+            if (thumb.isEmpty()) return;
+            Optional<FileWrapper> uploaded = s.context.getByPath(joinPath(parentId, name)).join();
+            if (uploaded.isEmpty()) return;
+            FileProperties current = uploaded.get().getFileProperties();
+            FileProperties updated = new FileProperties(current.name, current.isDirectory, current.isLink,
+                    current.mimeType, current.size, current.modified, current.created,
+                    current.isHidden, thumb, current.streamSecret, current.treeHash);
+            uploaded.get().setSameNameProperties(updated, s.network).join();
         }
     }
 
@@ -602,25 +621,6 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         } catch (Exception e) {
             Log.w(TAG, "mimetype detection failed for " + name, e);
             return null;
-        }
-    }
-
-    private static Optional<Thumbnail> generateThumbnail(File temp, String name) {
-        try {
-            String mime = calculateMimeType(temp, name);
-            if (mime == null) return Optional.empty();
-            if (mime.startsWith("image/")) {
-                long len = temp.length();
-                if (len > 64L * 1024 * 1024) return Optional.empty();
-                byte[] bytes = Files.readAllBytes(temp.toPath());
-                return new AndroidImageThumbnailer().generateThumbnail(bytes);
-            }
-            if (mime.startsWith("video/"))
-                return MainActivity.generateVideoThumbnail(temp);
-            return Optional.empty();
-        } catch (Exception e) {
-            Log.w(TAG, "thumbnail generation failed", e);
-            return Optional.empty();
         }
     }
 
