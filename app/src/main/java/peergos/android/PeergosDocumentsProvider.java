@@ -5,7 +5,9 @@ import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.database.MatrixCursor;
+import android.graphics.Bitmap;
 import android.graphics.Point;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.CancellationSignal;
 import android.os.Handler;
@@ -21,6 +23,7 @@ import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -29,26 +32,46 @@ import java.io.RandomAccessFile;
 import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import peergos.shared.Crypto;
+import peergos.shared.MaybeMultihash;
 import peergos.shared.NetworkAccess;
+import peergos.shared.crypto.SigningPrivateKeyAndPublicHash;
+import peergos.shared.crypto.SymmetricLinkToSigner;
+import peergos.shared.crypto.hash.Hasher;
+import peergos.shared.crypto.symmetric.SymmetricKey;
+import peergos.shared.storage.auth.Bat;
+import peergos.shared.storage.auth.BatId;
 import peergos.shared.user.UserContext;
 import peergos.shared.user.fs.AsyncReader;
+import peergos.shared.user.fs.Chunk;
+import peergos.shared.user.fs.FileProperties;
+import peergos.shared.user.fs.FileUploader;
 import peergos.shared.user.fs.FileWrapper;
 import peergos.shared.user.fs.HashTree;
+import peergos.shared.user.fs.LocatedChunk;
+import peergos.shared.user.fs.Location;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.Thumbnail;
 import peergos.shared.user.fs.ThumbnailGenerator;
+import peergos.shared.user.fs.WritableAbsoluteCapability;
+import peergos.shared.util.Pair;
 import peergos.shared.util.PathUtil;
 
 public class PeergosDocumentsProvider extends DocumentsProvider {
 
     private static final String TAG = "PeergosDocsProvider";
+
+    private static final int THUMBNAIL_SIZE = 400;
 
     private static final String[] DEFAULT_ROOT_PROJECTION = {
             Root.COLUMN_ROOT_ID, Root.COLUMN_DOCUMENT_ID, Root.COLUMN_TITLE,
@@ -220,31 +243,38 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         // Indeterminate progress: the editor decides the total size as it writes, so we
         // don't know it up front. start(name, 0) renders an indeterminate bar.
         UploadProgressNotifier.Handle handle = progressNotifier().start(name, 0);
-        File staging;
-        try {
-            staging = File.createTempFile("peergos-write-", ".tmp", appCtx.getCacheDir());
-        } catch (IOException e) {
-            thread.quitSafely();
-            StreamingForegroundService.release(appCtx);
-            handle.fail("could not stage write");
-            throw rethrowAsFnf("staging file for " + documentId, e);
+        // An empty file we just made ourselves is a placeholder, not content worth keeping,
+        // so its bytes can stream straight out as they arrive. Anything with existing content
+        // behind it is staged instead, since a write may revise bytes already gone past.
+        boolean createdHere = existingOpt.isEmpty() || freshlyCreated.remove(documentId);
+        boolean canStream = createdHere && !fw.isDirty() && fw.getFileProperties().streamSecret.isPresent();
+        StreamingWriteBuffer stream = canStream ? new StreamingWriteBuffer() : null;
+        File staging = null;
+        if (stream == null) {
+            try {
+                staging = File.createTempFile("peergos-write-", ".tmp", appCtx.getCacheDir());
+            } catch (IOException e) {
+                thread.quitSafely();
+                StreamingForegroundService.release(appCtx);
+                handle.fail("could not stage write");
+                throw rethrowAsFnf("staging file for " + documentId, e);
+            }
         }
         // Only a non-truncating open needs the existing bytes staged before the first write.
         boolean needsPrefill = !truncateMode && fw.getSize() > 0;
-        // An empty file we just made ourselves is a placeholder, not content worth preserving.
-        boolean createdHere = existingOpt.isEmpty() || freshlyCreated.remove(documentId);
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
                     new PeergosWriteProxyCallback(fw, fw.getSize(), parentId, name, s, thread,
                             appCtx, appCtx.getContentResolver(), streamingPool, handle, staging,
-                            needsPrefill, createdHere),
+                            needsPrefill, stream),
                     new Handler(thread.getLooper()));
         } catch (IOException e) {
             thread.quitSafely();
             StreamingForegroundService.release(appCtx);
             handle.fail(e.getMessage() != null ? e.getMessage() : "open failed");
-            try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
+            if (staging != null)
+                try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
             throw rethrowAsFnf("openProxyFileDescriptor " + documentId, e);
         }
     }
@@ -449,8 +479,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final File staging;
         private final FileWrapper fw;
         private final boolean needsPrefill;
-        private final boolean createdHere;
+        /** Set for a file this open created: it starts empty, so its bytes can go straight
+         *  out chunk by chunk as they arrive instead of being staged on disk first. */
+        private final StreamingWriteBuffer stream;
+        private final List<byte[]> chunkHashes = new ArrayList<>();
         private RandomAccessFile raf;
+        private Future<?> uploadTask;
+        private String mimeType;
+        private Optional<Thumbnail> thumbnail = Optional.empty();
         private long size;
         private boolean dirty;
         private String writeError;
@@ -459,7 +495,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
                                   UploadProgressNotifier.Handle handle, File staging,
-                                  boolean needsPrefill, boolean createdHere) {
+                                  boolean needsPrefill, StreamingWriteBuffer stream) {
             this.fw = fw;
             this.size = size;
             this.parentId = parentId;
@@ -472,7 +508,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             this.handle = handle;
             this.staging = staging;
             this.needsPrefill = needsPrefill;
-            this.createdHere = createdHere;
+            this.stream = stream;
         }
 
         /** Opens the staging file, and for a non-truncating open pulls the existing content
@@ -507,6 +543,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         @Override
         public int onRead(long offset, int len, byte[] data) throws ErrnoException {
             if (offset >= size) return 0;
+            if (stream != null) {
+                // Already uploaded and dropped from memory — that's the deal a streaming
+                // upload makes. Only a file that started empty takes this path, so there is
+                // nothing to read back that the writer did not itself just write.
+                Log.w(TAG, "read-back of streaming upload " + name + " at offset=" + offset);
+                throw new ErrnoException("onRead", OsConstants.EIO);
+            }
             int toRead = (int) Math.min(len, size - offset);
             try {
                 RandomAccessFile f = staged();
@@ -527,9 +570,16 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
             try {
-                RandomAccessFile f = staged();
-                f.seek(offset);
-                f.write(data, 0, len);
+                if (stream != null) {
+                    // Blocks while the window is full: that backpressure is what paces the
+                    // writing app to the upload, and caps our memory at one chunk.
+                    if (uploadTask == null) uploadTask = postReleasePool.submit(this::streamChunks);
+                    stream.write(offset, data, len);
+                } else {
+                    RandomAccessFile f = staged();
+                    f.seek(offset);
+                    f.write(data, 0, len);
+                }
                 if (offset + len > size) size = offset + len;
                 dirty = true;
                 return len;
@@ -549,16 +599,23 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         public void onRelease() {
             try { if (raf != null) raf.close(); } catch (Exception ignored) {}
             raf = null;
+            if (stream != null) stream.setEof();
             thread.quitSafely();
             final long finalSize = size;
             final boolean wroteAnything = dirty;
             final String openError = writeError;
+            final Future<?> inFlight = uploadTask;
             postReleasePool.execute(() -> {
                 String error = openError;
                 try {
                     if (wroteAnything && error == null) {
                         try {
-                            uploadStaged(finalSize);
+                            if (inFlight != null) {
+                                inFlight.get();
+                                finishStreamedUpload(finalSize);
+                            } else {
+                                overwriteExistingFile(finalSize);
+                            }
                         } catch (Exception e) {
                             Log.w(TAG, "upload of " + name + " failed", e);
                             error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -567,7 +624,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                     if (error == null) handle.finish();
                     else handle.fail(error);
                 } finally {
-                    try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
+                    if (staging != null)
+                        try { Files.deleteIfExists(staging.toPath()); } catch (IOException ignored) {}
                     cr.notifyChange(DocumentsContract.buildChildDocumentsUri(
                             DocumentsProviderBackend.AUTHORITY, parentId), null);
                     StreamingForegroundService.release(appCtx);
@@ -575,22 +633,123 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             });
         }
 
-        private void uploadStaged(long finalSize) {
-            if (createdHere) uploadAsNewFile(finalSize);
-            else overwriteExistingFile(finalSize);
+        /** Uploads the file a chunk at a time as the writer produces it, reusing the keys and
+         *  stream secret of the empty placeholder already linked into the parent — so the
+         *  chunks land where the file's capability says they should, and no separate step is
+         *  needed to attach the finished file to its directory.
+         *
+         *  Chunk locations come from the stream secret, exactly as a whole-file upload
+         *  derives them, so this is the same layout by a different route. The real size isn't
+         *  known until the writer closes, so the properties written here are provisional and
+         *  {@link #finishStreamedUpload} corrects them once. */
+        private void streamChunks() {
+            try {
+                WritableAbsoluteCapability cap = fw.writableFilePointer();
+                SymmetricKey baseKey = cap.rBaseKey;
+                SymmetricKey dataKey = fw.getPointer().fileAccess.getDataKey(baseKey);
+                SymmetricKey parentParentKey = fw.getPointer().getParentParentKey();
+                Location parentLocation = fw.getPointer().getParentCap().getLocation(fw.owner(), fw.writer());
+                Optional<Bat> parentBat = fw.getPointer().getParentCap().bat;
+                byte[] streamSecret = fw.getFileProperties().streamSecret.get();
+                SigningPrivateKeyAndPublicHash signer = fw.signingPair();
+                Optional<BatId> mirrorBat = fw.mirrorBatId();
+                LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+                Hasher hasher = s.crypto.hasher;
+
+                long uploaded = 0;
+                for (int i = 0; ; i++) {
+                    int chunkLen = stream.awaitChunk();
+                    // A file whose length is an exact multiple of the chunk size ends here.
+                    if (chunkLen == 0 && i > 0) break;
+                    byte[] data = stream.takeChunk();
+                    if (i == 0) {
+                        mimeType = MimeTypes.calculateMimeType(Arrays.copyOf(data,
+                                Math.min(data.length, MimeTypes.HEADER_BYTES_TO_IDENTIFY_MIME_TYPE)), name);
+                        // The whole file is in hand only while it fits in one chunk; anything
+                        // bigger gets its thumbnail read back from Peergos afterwards.
+                        if (chunkLen < Chunk.MAX_SIZE) thumbnail = thumbnailFrom(data, mimeType);
+                    }
+                    chunkHashes.add(hasher.sha256(data).join());
+
+                    Pair<byte[], Optional<Bat>> here = FileProperties.calculateMapKey(streamSecret,
+                            cap.getMapKey(), cap.bat, (long) i * Chunk.MAX_SIZE, hasher).join();
+                    Pair<byte[], Optional<Bat>> next = FileProperties.calculateNextMapKey(streamSecret,
+                            here.left, here.right, hasher).join();
+                    // Chunk 0 replaces the placeholder's node, so its upload has to claim the
+                    // hash that is actually there; every later chunk is new ground.
+                    MaybeMultihash existing = i == 0
+                            ? fw.getPointer().fileAccess.committedHash() : MaybeMultihash.empty();
+                    Optional<SymmetricLinkToSigner> writerLink = i == 0
+                            ? fw.getPointer().fileAccess.getWriterLink(baseKey) : Optional.empty();
+                    LocatedChunk chunk = new LocatedChunk(
+                            new Location(fw.owner(), fw.writer(), here.left), here.right, existing,
+                            new Chunk(data, dataKey, here.left, baseKey.createNonce()));
+                    Location nextLocation = new Location(fw.owner(), fw.writer(), next.left);
+
+                    long end = uploaded + chunkLen;
+                    FileProperties props = new FileProperties(name, false, false, mimeType, end,
+                            now, now, false, Optional.empty(), Optional.of(streamSecret), Optional.empty());
+                    s.network.synchronizer.applyComplexUpdate(fw.owner(), signer,
+                            (snapshot, committer) -> FileUploader.uploadChunk(snapshot, committer, signer,
+                                    props, parentLocation, parentBat, parentParentKey, baseKey, chunk,
+                                    nextLocation, next.right, writerLink, mirrorBat, s.crypto.random,
+                                    hasher, s.network, handle::onBytes)).join();
+                    uploaded = end;
+                    if (chunkLen < Chunk.MAX_SIZE) break;
+                }
+            } catch (Exception e) {
+                // Wake the writer rather than leaving it blocked on a window nothing will drain.
+                stream.abort(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+                throw new RuntimeException(e);
+            }
         }
 
-        private void uploadAsNewFile(long finalSize) {
-            String documentId = joinPath(parentId, name);
-            Optional<FileWrapper> placeholder = s.context.getByPath(documentId).join();
-            if (placeholder.isPresent())
-                placeholder.get().remove(parent(), PathUtil.get(documentId), s.context).join();
+        /** One properties write to replace the provisional size with the real one and attach
+         *  the hash tree built from the chunks as they went past. */
+        private void finishStreamedUpload(long finalSize) {
+            FileWrapper uploaded = lookup();
+            HashTree tree = HashTree.build(chunkHashes, s.crypto.hasher).join();
+            FileProperties current = uploaded.getFileProperties();
+            FileProperties finalProps = new FileProperties(name, false, false,
+                    mimeType != null ? mimeType : current.mimeType, finalSize,
+                    current.modified, current.created, false, thumbnail,
+                    current.streamSecret, Optional.of(tree.branch(0)));
+            uploaded.setSameNameProperties(finalProps, s.network).join();
 
-            Optional<Thumbnail> thumb = generateThumbnail(staging, name);
-            HashTree hash = withStagingReader(r ->
-                    HashTree.build(r, (int) (finalSize >>> 32), (int) finalSize, s.crypto.hasher).join());
-            withStagingReader(r -> parent().uploadFileWithHash(name, r, finalSize, Optional.of(hash),
-                    Optional.empty(), thumb, s.network, s.crypto, handle::onBytes).join());
+            if (thumbnail.isEmpty() && wantsThumbnail(mimeType)) {
+                // Too big to have kept in memory, so read it back from Peergos — the blocks
+                // we just wrote are still local, and video is read a frame at a time.
+                if (mimeType.startsWith("video/")) addVideoThumbnail();
+                else lookup().calculateAndUpdateThumbnail(s.network, s.crypto).join();
+            }
+        }
+
+        /** Reads the video back through our own provider, so MediaMetadataRetriever seeks to
+         *  the frame it wants instead of us pulling the whole file down for one image. */
+        private void addVideoThumbnail() {
+            Uri uri = DocumentsContract.buildDocumentUri(
+                    DocumentsProviderBackend.AUTHORITY, joinPath(parentId, name));
+            MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+            Optional<Thumbnail> thumb;
+            try {
+                retriever.setDataSource(appCtx, uri);
+                Bitmap frame = retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        THUMBNAIL_SIZE, THUMBNAIL_SIZE);
+                if (frame == null) return;
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                frame.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, out);
+                thumb = Optional.of(new Thumbnail("image/webp", out.toByteArray()));
+            } catch (Exception e) {
+                Log.w(TAG, "video thumbnail failed for " + name, e);
+                return;
+            } finally {
+                try { retriever.release(); } catch (IOException ignored) {}
+            }
+            FileWrapper uploaded = lookup();
+            FileProperties current = uploaded.getFileProperties();
+            uploaded.setSameNameProperties(new FileProperties(current.name, false, current.isLink,
+                    current.mimeType, current.size, current.modified, current.created,
+                    current.isHidden, thumb, current.streamSecret, current.treeHash), s.network).join();
         }
 
         /** Overwrite of a file that already existed before this open: keep the existing
@@ -598,6 +757,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private void overwriteExistingFile(long finalSize) {
             withStagingReader(r -> parent().uploadFileSection(name, r, false, 0, finalSize,
                     Optional.empty(), true, s.network, s.crypto, () -> false, handle::onBytes).join());
+        }
+
+        private FileWrapper lookup() {
+            return s.context.getByPath(joinPath(parentId, name)).join()
+                    .orElseThrow(() -> new IllegalStateException("Uploaded file vanished: " + name));
         }
 
         private FileWrapper parent() {
@@ -628,37 +792,20 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         return m != null && (m.contains("EPIPE") || m.contains("Broken pipe"));
     }
 
-    private static String calculateMimeType(File temp, String name) {
-        try {
-            byte[] head = new byte[Math.min((int) temp.length(), MimeTypes.HEADER_BYTES_TO_IDENTIFY_MIME_TYPE)];
-            try (java.io.InputStream in = new java.io.FileInputStream(temp)) {
-                int got = 0;
-                while (got < head.length) {
-                    int n = in.read(head, got, head.length - got);
-                    if (n <= 0) break;
-                    got += n;
-                }
-            }
-            return MimeTypes.calculateMimeType(head, name);
-        } catch (Exception e) {
-            Log.w(TAG, "mimetype detection failed for " + name, e);
-            return null;
-        }
+    private static boolean wantsThumbnail(String mime) {
+        return mime != null && !mime.equals("image/svg+xml")
+                && (mime.startsWith("image/") || mime.startsWith("video/"));
     }
 
-    private static Optional<Thumbnail> generateThumbnail(File staged, String name) {
+    /** Built while the bytes are still in hand, so it rides along with the properties write
+     *  that finishes the upload rather than costing one of its own. Video needs something
+     *  seekable, so it is left to {@code addVideoThumbnail}. */
+    private static Optional<Thumbnail> thumbnailFrom(byte[] content, String mime) {
+        if (!wantsThumbnail(mime) || !mime.startsWith("image/")) return Optional.empty();
         try {
-            String mime = calculateMimeType(staged, name);
-            if (mime == null) return Optional.empty();
-            if (mime.startsWith("image/")) {
-                if (staged.length() > 64L * 1024 * 1024) return Optional.empty();
-                return ThumbnailGenerator.get().generateThumbnail(Files.readAllBytes(staged.toPath()));
-            }
-            if (mime.startsWith("video/"))
-                return MainActivity.generateVideoThumbnail(staged);
-            return Optional.empty();
+            return ThumbnailGenerator.get().generateThumbnail(content);
         } catch (Exception e) {
-            Log.w(TAG, "thumbnail generation failed for " + name, e);
+            Log.w(TAG, "thumbnail generation failed", e);
             return Optional.empty();
         }
     }
