@@ -120,10 +120,13 @@ public class SyncWorker extends Worker {
                 int maxDownloadParallelism = syncConfig.maxDownloadParallelism;
                 int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
 
+                ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+                ConnectivityManager.NetworkCallback meteredWatcher = null;
+
                 // On a metered (mobile) network, drop pairs that aren't allowed there.
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each
                 // pair's allowOnMobile flag is what gates mobile-data usage.
-                if (isMeteredNetwork(context)) {
+                if (isMeteredNetwork(cm)) {
                     List<String> fLinks = new ArrayList<>();
                     List<String> fLocalDirs = new ArrayList<>();
                     List<Boolean> fSyncLocalDeletes = new ArrayList<>();
@@ -144,25 +147,47 @@ public class SyncWorker extends Worker {
                     localDirs = fLocalDirs;
                     syncLocalDeletes = fSyncLocalDeletes;
                     syncRemoteDeletes = fSyncRemoteDeletes;
+                } else if (cm != null && syncConfig.allowOnMobile.contains(false)) {
+                    // Metered-ness is only sampled above, at pass start, so without this a
+                    // mid-pass handover to mobile (walking out of Wi-Fi range) would keep
+                    // spending mobile data for the rest of a long pass.
+                    meteredWatcher = new ConnectivityManager.NetworkCallback() {
+                        @Override
+                        public void onCapabilitiesChanged(Network net, NetworkCapabilities caps) {
+                            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+                                status.cancel();
+                            }
+                        }
+                    };
+                    cm.registerDefaultNetworkCallback(meteredWatcher);
                 }
 
-                DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
-                        maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
-                                context, crypto), peergosDir,
-                        status,
-                        m -> {
-                            status.setStatus(m);
-                            LOG.info(m);
-                        },
-                        e -> {
-                            if (e != null) {
-                                Throwable cause = getCause(e);
-                                if (!(cause instanceof UnknownHostException)) {
-                                    status.setError(cause.getMessage());
+                try {
+                    DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
+                            maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
+                                    context, crypto), peergosDir,
+                            status,
+                            m -> {
+                                status.setStatus(m);
+                                LOG.info(m);
+                            },
+                            e -> {
+                                if (e != null) {
+                                    Throwable cause = getCause(e);
+                                    if (!(cause instanceof UnknownHostException)) {
+                                        status.setError(cause.getMessage());
+                                    }
+                                    LOG.log(Level.WARNING, cause, cause::getMessage);
                                 }
-                                LOG.log(Level.WARNING, cause, cause::getMessage);
-                            }
-                        }, network, crypto);
+                            }, network, crypto);
+                } finally {
+                    if (meteredWatcher != null) {
+                        cm.unregisterNetworkCallback(meteredWatcher);
+                    }
+                    // syncDirs only self-clears cancellation when it starts another pair, so a
+                    // cancel during the last one would leave the shared status wedged.
+                    status.resume();
+                }
                 return true;
             } catch (MalformedURLException e) {
                 e.printStackTrace();
@@ -180,8 +205,7 @@ public class SyncWorker extends Worker {
         }
     }
 
-    private static boolean isMeteredNetwork(Context context) {
-        ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+    private static boolean isMeteredNetwork(ConnectivityManager cm) {
         if (cm == null) return false;
         Network active = cm.getActiveNetwork();
         if (active == null) return false;
