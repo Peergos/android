@@ -11,7 +11,6 @@ import android.os.ParcelFileDescriptor;
 import androidx.documentfile.provider.DocumentFile;
 
 import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -421,8 +420,13 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     public static List<byte[]> parallelHashChunks(Supplier<InputStream> fins, int nThreads, long size) {
         int nChunks = (int) ((size + Chunk.MAX_SIZE - 1)/ Chunk.MAX_SIZE);
         long chunksPerThread = (nChunks + nThreads - 1) / nThreads;
-        if (size < Chunk.MAX_SIZE)
-            return hashChunks(fins.get(), size);
+        if (size < Chunk.MAX_SIZE) {
+            try (InputStream fin = fins.get()) {
+                return hashChunks(fin, size);
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
+        }
         return IntStream.range(0, nThreads)
                 .parallel()
                 .mapToObj(i -> {
@@ -452,7 +456,9 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         List<byte[]> chunkHashes = parallelHashChunks(() -> {
             try {
                 ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "r");
-                return new FileInputStream(pfd.getFileDescriptor());
+                // Ties the fd's lifetime to the stream: leaving the pfd to its finalizer can
+                // close the fd during an in-progress read on another thread => EBADF.
+                return new ParcelFileDescriptor.AutoCloseInputStream(pfd);
             } catch (FileNotFoundException e) {
                 throw new RuntimeException(e);
             }

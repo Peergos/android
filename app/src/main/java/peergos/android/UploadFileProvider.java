@@ -84,12 +84,10 @@ public class UploadFileProvider extends ContentProvider {
                     row[i] = entry.relativePath;
                     break;
                 case OpenableColumns.SIZE:
-                    try {
-                        ParcelFileDescriptor pfd = getContext().getContentResolver()
-                                .openFileDescriptor(entry.realUri, "r");
+                    try (ParcelFileDescriptor pfd = getContext().getContentResolver()
+                            .openFileDescriptor(entry.realUri, "r")) {
                         if (pfd != null) {
                             row[i] = pfd.getStatSize();
-                            pfd.close();
                         }
                     } catch (Exception e) {
                         row[i] = 0L;
