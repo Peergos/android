@@ -12,16 +12,31 @@ jobs:
         with:
           submodules: recursive
 
+      # 25 builds/runs the Peergos server (src/peergos/server needs the final
+      # java.lang.foreign API); 21 is what Gradle 8.10.2 / AGP 8.8.2 can run on.
+      # setup-java points JAVA_HOME at the last entry, so Gradle gets 21 by default.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: |
+            25
+            21
 
       - name: Install Ant
         run: sudo apt-get update && sudo apt-get install -y ant
 
       - name: Build host Peergos fat jar
-        run: cd web-ui && ant dist
+        run: |
+          export JAVA_HOME="$JAVA_HOME_25_X64"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          cd web-ui && ant dist
+          # CompileSubmodule.java ignores the exit code of the inner `ant dist`,
+          # so a failed server build silently yields a jar of deps + manifest only.
+          if ! unzip -l server/Peergos.jar | grep -q 'peergos/server/Main.class'; then
+            echo "::error::web-ui/server/Peergos.jar has no peergos.server.Main - the peergos submodule build failed"
+            exit 1
+          fi
 
       - name: Enable KVM
         run: |
@@ -35,7 +50,7 @@ jobs:
       - name: Start Peergos server on host
         run: |
           export PEERGOS_HOST_DIR=$(mktemp -d)
-          nohup java -jar web-ui/server/Peergos.jar pki-init \
+          nohup "$JAVA_HOME_25_X64/bin/java" -jar web-ui/server/Peergos.jar pki-init \
             -port 8000 \
             -proxy-target /ip4/127.0.0.1/tcp/5556 \
             -gateway-port 8090 \
