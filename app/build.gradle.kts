@@ -9,7 +9,7 @@ android {
     defaultConfig {
         applicationId = "peergos.android"
         minSdk = 30
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 62
         versionName = "1.31.0"
 
