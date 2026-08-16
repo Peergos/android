@@ -78,6 +78,10 @@ public class SyncWorker extends Worker {
      */
     public static boolean runSyncOnce(Context context, Path peergosDir) {
         synchronized (lock) {
+            // the periodic worker keeps firing while paused, so honour it here too;
+            // success rather than failure, or WorkManager would back the schedule off
+            if (status.isPaused())
+                return true;
             try {
                 System.out.println("SYNC: starting work");
                 Crypto crypto = Main.initCrypto(new ScryptAndroid());
@@ -88,6 +92,11 @@ public class SyncWorker extends Worker {
                 SyncConfig syncConfig = jsonExists ?
                         SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
                         SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldConfigFile), false));
+                // a fresh process starts with the flag clear, so take it from the config
+                if (syncConfig.paused) {
+                    status.pause();
+                    return true;
+                }
 
                 Args args = Args.parse(new String[0], Optional.of(oldConfigFile), false)
                         .with("PEERGOS_PATH", peergosDir.toString())
