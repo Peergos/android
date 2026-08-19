@@ -25,18 +25,13 @@ jobs:
       - name: Install Ant
         run: sudo apt-get update && sudo apt-get install -y ant
 
-      - name: Build host Peergos fat jar
-        run: |
-          export JAVA_HOME="$JAVA_HOME_25_X64"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          java -version
-          cd web-ui && ant dist
-          # CompileSubmodule.java ignores the exit code of the inner `ant dist`,
-          # so a failed server build silently yields a jar of deps + manifest only.
-          if ! unzip -l server/Peergos.jar | grep -q 'peergos/server/Main.class'; then
-            echo "::error::web-ui/server/Peergos.jar has no peergos.server.Main - the peergos submodule build failed"
-            exit 1
-          fi
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Builds web-ui/server/Peergos.jar (run below as the host server) and strips a
+      # copy of it into app/libs/Peergos.jar for the app. Doing it here rather than
+      # letting the test step trigger it keeps the slow ant build out of the emulator.
+      - name: Build Peergos fat jar from the web-ui submodule
+        run: ./gradlew peergosJar -Ppeergos.jdk="$JAVA_HOME_25_X64"
 
       - name: Enable KVM
         run: |
@@ -89,8 +84,6 @@ jobs:
           echo "::error::peergos server did not respond on :8000 within 180s"
           tail -80 peergos-host.log
           exit 1
-
-      - uses: gradle/actions/setup-gradle@v4
 
       - name: AVD cache
         uses: actions/cache@v4
