@@ -182,7 +182,8 @@ public class MainActivity extends AppCompatActivity {
     ContentAddressedStorage localDht;
     CoreNode core;
     ActivityResultLauncher requestPermissions;
-    CompletableFuture<String> chosenHostDir;
+    // requested on the http server thread, completed on the ui thread
+    volatile CompletableFuture<String> chosenHostDir;
     String currentUploadSession = null;
     CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
@@ -199,7 +200,11 @@ public class MainActivity extends AppCompatActivity {
 
     private CompletableFuture<String> chooseDirToAccess() {
         CompletableFuture<String> res = new CompletableFuture<>();
+        // a request that is still waiting would never be answered once it is replaced
+        CompletableFuture<String> pending = chosenHostDir;
         chosenHostDir = res;
+        if (pending != null)
+            pending.complete("");
         StorageManager sm = (StorageManager) getSystemService(Context.STORAGE_SERVICE);
         Intent intent = sm.getPrimaryStorageVolume().createOpenDocumentTreeIntent();
 //            String startDir = "DCIM%2FCamera";
@@ -721,13 +726,21 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (requestCode == REQUEST_ACTION_OPEN_DOCUMENT_TREE) {
             System.out.println("Got FOLDER ACCESS");
-            if (data != null) {
-                Uri uri = uri = data.getData();
+            CompletableFuture<String> chosen = chosenHostDir;
+            chosenHostDir = null;
+            if (chosen == null)
+                return;
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                Uri uri = data.getData();
                 // eg. content://com.android.externalstorage.documents/tree/primary%3ADocuments
                 getContentResolver().takePersistableUriPermission(uri,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                // Perform operations on the document using its URI.
-                chosenHostDir.complete(uri.toString());
+                chosen.complete(uri.toString());
+            } else {
+                // backing out of the picker still has to answer the waiting request, or the
+                // sync page hangs until the app is restarted. An empty root is what it reads
+                // as "closed without choosing a folder".
+                chosen.complete("");
             }
         }
     }
