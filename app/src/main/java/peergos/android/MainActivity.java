@@ -496,7 +496,7 @@ public class MainActivity extends AppCompatActivity {
                 webView.loadUrl("http://localhost:" + PORT);
                 progressDialog.hide();
             });
-            ForkJoinPool.commonPool().submit(syncer::runNow);
+            ForkJoinPool.commonPool().submit((Runnable) syncer::runNow);
         }).start();
     }
 
