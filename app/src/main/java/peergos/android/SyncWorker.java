@@ -37,8 +37,11 @@ import peergos.server.UserService;
 import peergos.server.net.SyncConfigHandler;
 import peergos.server.storage.FileBlockCache;
 import peergos.server.sync.DirectorySync;
+import peergos.server.sync.PairLogger;
+import peergos.server.sync.PairStatus;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
+import peergos.server.sync.SyncStatus;
 import peergos.server.util.Args;
 import peergos.server.util.Logging;
 import peergos.shared.Crypto;
@@ -152,6 +155,9 @@ public class SyncWorker extends Worker {
                     }
                     if (fLinks.isEmpty()) {
                         System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                        // say so on each folder, or a sync that is waiting for Wi-Fi is
+                        // indistinguishable from one that is idle and up to date
+                        reportMobileDataBlocked(peergosDir, syncConfig);
                         return true;
                     }
                     links = fLinks;
@@ -169,7 +175,7 @@ public class SyncWorker extends Worker {
                         @Override
                         public void run() {
                             if (isMeteredNetwork(cm))
-                                status.cancel();
+                                status.cancel(MOBILE_BLOCKED);
                         }
                     }, METERED_FIRST_CHECK_MS, METERED_CHECK_MS);
                 }
@@ -219,6 +225,20 @@ public class SyncWorker extends Worker {
     // the window in which a pass can still be spending mobile data after a handover
     private static final long METERED_FIRST_CHECK_MS = 2_000;
     private static final long METERED_CHECK_MS = 5_000;
+
+    private static final String MOBILE_BLOCKED = "Not syncing on mobile data. Connect to Wi-Fi, "
+            + "or allow this folder on mobile data.";
+
+    private static void reportMobileDataBlocked(Path peergosDir, SyncConfig config) {
+        for (int i = 0; i < config.links.size(); i++) {
+            if (config.allowOnMobile.get(i))
+                continue;
+            PairStatus pair = new PairStatus(peergosDir,
+                    PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
+            pair.setError(MOBILE_BLOCKED);
+            pair.setStatus(SyncStatus.ERROR);
+        }
+    }
 
     private static boolean isMeteredNetwork(ConnectivityManager cm) {
         if (cm == null) return false;
