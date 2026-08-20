@@ -7,6 +7,12 @@ import android.net.NetworkCapabilities;
 import android.net.Uri;
 
 import androidx.annotation.NonNull;
+import androidx.work.Constraints;
+import androidx.work.Data;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
@@ -153,11 +159,14 @@ public class SyncWorker extends Worker {
                             fSyncRemoteDeletes.add(syncRemoteDeletes.get(i));
                         }
                     }
-                    if (fLinks.isEmpty()) {
-                        System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                    if (fLinks.size() < links.size()) {
                         // say so on each folder, or a sync that is waiting for Wi-Fi is
                         // indistinguishable from one that is idle and up to date
                         reportMobileDataBlocked(peergosDir, syncConfig);
+                        retryWhenUnmetered(context, peergosDir);
+                    }
+                    if (fLinks.isEmpty()) {
+                        System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
                         return true;
                     }
                     links = fLinks;
@@ -201,6 +210,9 @@ public class SyncWorker extends Worker {
                 } finally {
                     if (meteredWatch != null)
                         meteredWatch.cancel();
+                    // read before resume(), which clears the reason
+                    if (status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
+                        retryWhenUnmetered(context, peergosDir);
                     // syncDirs only self-clears cancellation when it starts another pair, so a
                     // cancel during the last one would leave the shared status wedged.
                     status.resume();
@@ -228,6 +240,22 @@ public class SyncWorker extends Worker {
 
     private static final String MOBILE_BLOCKED = "Not syncing on mobile data. Connect to Wi-Fi, "
             + "or allow this folder on mobile data.";
+
+    /** Wi-Fi can come back long before the next periodic run, so let WorkManager start a
+     *  pass as soon as an unmetered network is up. Unique work, so repeated blocks replace
+     *  each other rather than stack, and it outlives this process. */
+    private static void retryWhenUnmetered(Context context, Path peergosDir) {
+        WorkManager.getInstance(context).enqueueUniqueWork("peergos-sync-unmetered",
+                ExistingWorkPolicy.REPLACE,
+                new OneTimeWorkRequest.Builder(SyncWorker.class)
+                        .setConstraints(new Constraints.Builder()
+                                .setRequiredNetworkType(NetworkType.UNMETERED)
+                                .build())
+                        .setInputData(new Data.Builder()
+                                .putString("PEERGOS_PATH", peergosDir.toString())
+                                .build())
+                        .build());
+    }
 
     private static void reportMobileDataBlocked(Path peergosDir, SyncConfig config) {
         for (int i = 0; i < config.links.size(); i++) {
