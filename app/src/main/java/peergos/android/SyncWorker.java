@@ -33,6 +33,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,7 +67,14 @@ import peergos.shared.user.HttpPoster;
 
 public class SyncWorker extends Worker {
     public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
+    /** The key the worker reads its peergos dir from. */
+    public static final String PEERGOS_PATH = "PEERGOS_PATH";
     private static final Logger LOG = Logging.LOG();
+    /** How soon, and how often, a running pass rechecks that it is still off mobile data. */
+    private static final long METERED_FIRST_CHECK_MS = 2_000;
+    private static final long METERED_CHECK_MS = 5_000;
+    private static final String MOBILE_BLOCKED = "Not syncing on mobile data. Connect to Wi-Fi, "
+            + "or allow this folder on mobile data.";
 
     public static final Object lock = new Object();
     public SyncWorker(@NonNull Context context, @NonNull WorkerParameters workerParams) {
@@ -76,7 +84,7 @@ public class SyncWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
-        Path peergosDir = Paths.get(getInputData().getString("PEERGOS_PATH"));
+        Path peergosDir = Paths.get(getInputData().getString(PEERGOS_PATH));
         return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.failure();
     }
 
@@ -142,6 +150,7 @@ public class SyncWorker extends Worker {
 
                 ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
                 Timer meteredWatch = null;
+                AtomicBoolean thisPass = new AtomicBoolean(true);
 
                 // On a metered (mobile) network, drop pairs that aren't allowed there.
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each
@@ -183,8 +192,12 @@ public class SyncWorker extends Worker {
                     meteredWatch.schedule(new TimerTask() {
                         @Override
                         public void run() {
-                            if (isMeteredNetwork(cm))
-                                status.cancel(MOBILE_BLOCKED);
+                            // cancelling the timer cannot interrupt a tick already running,
+                            // so the pass hands the flag over rather than stopping the next one
+                            synchronized (thisPass) {
+                                if (thisPass.get() && isMeteredNetwork(cm))
+                                    status.cancel(MOBILE_BLOCKED);
+                            }
                         }
                     }, METERED_FIRST_CHECK_MS, METERED_CHECK_MS);
                 }
@@ -208,8 +221,12 @@ public class SyncWorker extends Worker {
                                 }
                             }, network, crypto);
                 } finally {
-                    if (meteredWatch != null)
+                    if (meteredWatch != null) {
+                        synchronized (thisPass) {
+                            thisPass.set(false);
+                        }
                         meteredWatch.cancel();
+                    }
                     // read before resume(), which clears the reason
                     if (status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
                         retryWhenUnmetered(context, peergosDir);
@@ -234,13 +251,6 @@ public class SyncWorker extends Worker {
         }
     }
 
-    // the window in which a pass can still be spending mobile data after a handover
-    private static final long METERED_FIRST_CHECK_MS = 2_000;
-    private static final long METERED_CHECK_MS = 5_000;
-
-    private static final String MOBILE_BLOCKED = "Not syncing on mobile data. Connect to Wi-Fi, "
-            + "or allow this folder on mobile data.";
-
     /** Wi-Fi can come back long before the next periodic run, so let WorkManager start a
      *  pass as soon as an unmetered network is up. Unique work, so repeated blocks replace
      *  each other rather than stack, and it outlives this process. */
@@ -252,7 +262,7 @@ public class SyncWorker extends Worker {
                                 .setRequiredNetworkType(NetworkType.UNMETERED)
                                 .build())
                         .setInputData(new Data.Builder()
-                                .putString("PEERGOS_PATH", peergosDir.toString())
+                                .putString(PEERGOS_PATH, peergosDir.toString())
                                 .build())
                         .build());
     }

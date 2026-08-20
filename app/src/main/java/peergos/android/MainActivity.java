@@ -1242,7 +1242,7 @@ public class MainActivity extends AppCompatActivity {
             ThumbnailGenerator.setVideoInstance(f -> generateVideoThumbnail(f));
 
             Data syncArgs = new Data.Builder()
-                    .putString("PEERGOS_PATH", peergosDir.toString())
+                    .putString(SyncWorker.PEERGOS_PATH, peergosDir.toString())
                     .build();
             // Use CONNECTED rather than UNMETERED because allow-on-mobile is per-pair;
             // SyncWorker checks the current network metered-ness and filters pairs.
