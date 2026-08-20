@@ -23,6 +23,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.logging.Level;
@@ -130,7 +132,7 @@ public class SyncWorker extends Worker {
                 int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
 
                 ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-                ConnectivityManager.NetworkCallback meteredWatcher = null;
+                Timer meteredWatch = null;
 
                 // On a metered (mobile) network, drop pairs that aren't allowed there.
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each
@@ -159,16 +161,17 @@ public class SyncWorker extends Worker {
                 } else if (cm != null && syncConfig.allowOnMobile.contains(false)) {
                     // Metered-ness is only sampled above, at pass start, so without this a
                     // mid-pass handover to mobile (walking out of Wi-Fi range) would keep
-                    // spending mobile data for the rest of a long pass.
-                    meteredWatcher = new ConnectivityManager.NetworkCallback() {
+                    // spending mobile data for the rest of a long pass. A default network
+                    // callback missed such a handover, letting a pass upload for minutes on
+                    // mobile, so the same check the pass start uses is sampled instead.
+                    meteredWatch = new Timer("peergos-metered-watch", true);
+                    meteredWatch.schedule(new TimerTask() {
                         @Override
-                        public void onCapabilitiesChanged(Network net, NetworkCapabilities caps) {
-                            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+                        public void run() {
+                            if (isMeteredNetwork(cm))
                                 status.cancel();
-                            }
                         }
-                    };
-                    cm.registerDefaultNetworkCallback(meteredWatcher);
+                    }, METERED_FIRST_CHECK_MS, METERED_CHECK_MS);
                 }
 
                 try {
@@ -190,9 +193,8 @@ public class SyncWorker extends Worker {
                                 }
                             }, network, crypto);
                 } finally {
-                    if (meteredWatcher != null) {
-                        cm.unregisterNetworkCallback(meteredWatcher);
-                    }
+                    if (meteredWatch != null)
+                        meteredWatch.cancel();
                     // syncDirs only self-clears cancellation when it starts another pair, so a
                     // cancel during the last one would leave the shared status wedged.
                     status.resume();
@@ -213,6 +215,10 @@ public class SyncWorker extends Worker {
             }
         }
     }
+
+    // the window in which a pass can still be spending mobile data after a handover
+    private static final long METERED_FIRST_CHECK_MS = 2_000;
+    private static final long METERED_CHECK_MS = 5_000;
 
     private static boolean isMeteredNetwork(ConnectivityManager cm) {
         if (cm == null) return false;
