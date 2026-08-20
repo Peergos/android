@@ -501,7 +501,11 @@ public class MainActivity extends AppCompatActivity {
                 webView.loadUrl("http://localhost:" + PORT);
                 progressDialog.hide();
             });
-            ForkJoinPool.commonPool().submit((Runnable) syncer::runNow);
+            // null means another instance already started the server, and it runs its own
+            // schedule. Dispatching anyway threw from the method reference's null check,
+            // which killed the process part way through a sync pass.
+            if (syncer != null)
+                ForkJoinPool.commonPool().submit((Runnable) syncer::runNow);
         }).start();
     }
 
