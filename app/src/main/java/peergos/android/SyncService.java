@@ -53,7 +53,7 @@ public class SyncService extends Service {
 
     private Notification buildNotification() {
         return new NotificationCompat.Builder(this, MainActivity.SYNC_CHANNEL_ID)
-                .setSmallIcon(R.drawable.notification_background)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle("Sync")
                 .setContentText("Sync in progress...")
                 .setOngoing(true)
