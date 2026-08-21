@@ -33,6 +33,7 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -85,9 +86,10 @@ public class SyncWorker extends Worker {
     @Override
     public Result doWork() {
         Path peergosDir = Paths.get(getInputData().getString(PEERGOS_PATH));
-        // retry, not failure: failure is terminal, so a pass that lost the network would
-        // wait for the next periodic run instead of coming back with the connection
-        return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.retry();
+        // a pass that ends badly queues its own follow-up, which also covers the passes run
+        // by the foreground service, so this unit of work is done either way
+        runSyncOnce(getApplicationContext(), peergosDir);
+        return Result.success();
     }
 
     /**
@@ -95,12 +97,11 @@ public class SyncWorker extends Worker {
      * so it cooperates with SyncService and other periodic invocations — at most one
      * sync runs at a time across the process.
      *
-     * @return true on clean completion, false on UnknownHostException / fatal failure
+     * @return whether every folder in the pass synced, so a false asks for another go
      */
     public static boolean runSyncOnce(Context context, Path peergosDir) {
         synchronized (lock) {
-            // the periodic worker keeps firing while paused, so honour it here too;
-            // success rather than failure, or WorkManager would back the schedule off
+            // the scheduled work keeps firing while paused, so honour the flag here too
             if (status.isPaused())
                 return true;
             SyncConfig syncConfig = null;
@@ -144,103 +145,114 @@ public class SyncWorker extends Worker {
                     System.out.println("No sync args");
                     return true;
                 }
-                List<String> links = syncConfig.links;
-                List<String> localDirs = syncConfig.localDirs;
-                List<Boolean> syncLocalDeletes = syncConfig.syncLocalDeletes;
-                List<Boolean> syncRemoteDeletes = syncConfig.syncRemoteDeletes;
-                int maxDownloadParallelism = syncConfig.maxDownloadParallelism;
-                int minFreeSpacePercent = syncConfig.minFreeSpacePercent;
+                SyncConfig config = syncConfig;
+                int maxDownloadParallelism = config.maxDownloadParallelism;
+                int minFreeSpacePercent = config.minFreeSpacePercent;
 
                 ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
-                Timer meteredWatch = null;
-                AtomicBoolean thisPass = new AtomicBoolean(true);
-
-                // On a metered (mobile) network, drop pairs that aren't allowed there.
-                // The periodic worker constraint is CONNECTED, not UNMETERED, so each
-                // pair's allowOnMobile flag is what gates mobile-data usage.
-                if (isMeteredNetwork(cm)) {
-                    List<String> fLinks = new ArrayList<>();
-                    List<String> fLocalDirs = new ArrayList<>();
-                    List<Boolean> fSyncLocalDeletes = new ArrayList<>();
-                    List<Boolean> fSyncRemoteDeletes = new ArrayList<>();
-                    for (int i = 0; i < links.size(); i++) {
-                        if (syncConfig.allowOnMobile.get(i)) {
-                            fLinks.add(links.get(i));
-                            fLocalDirs.add(localDirs.get(i));
-                            fSyncLocalDeletes.add(syncLocalDeletes.get(i));
-                            fSyncRemoteDeletes.add(syncRemoteDeletes.get(i));
-                        }
-                    }
-                    if (fLinks.size() < links.size()) {
-                        // say so on each folder, or a sync that is waiting for Wi-Fi is
-                        // indistinguishable from one that is idle and up to date
-                        reportOnPairs(peergosDir, syncConfig, MOBILE_BLOCKED, true);
-                        retryWhenUnmetered(context, peergosDir);
-                    }
-                    if (fLinks.isEmpty()) {
-                        System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
-                        return true;
-                    }
-                    links = fLinks;
-                    localDirs = fLocalDirs;
-                    syncLocalDeletes = fSyncLocalDeletes;
-                    syncRemoteDeletes = fSyncRemoteDeletes;
-                } else if (cm != null && syncConfig.allowOnMobile.contains(false)) {
-                    // Metered-ness is only sampled above, at pass start, so without this a
-                    // mid-pass handover to mobile (walking out of Wi-Fi range) would keep
-                    // spending mobile data for the rest of a long pass. A default network
-                    // callback missed such a handover, letting a pass upload for minutes on
-                    // mobile, so the same check the pass start uses is sampled instead.
-                    meteredWatch = new Timer("peergos-metered-watch", true);
-                    meteredWatch.schedule(new TimerTask() {
-                        @Override
-                        public void run() {
-                            // cancelling the timer cannot interrupt a tick already running,
-                            // so the pass hands the flag over rather than stopping the next one
-                            synchronized (thisPass) {
-                                if (thisPass.get() && isMeteredNetwork(cm))
-                                    status.cancel(MOBILE_BLOCKED);
-                            }
-                        }
-                    }, METERED_FIRST_CHECK_MS, METERED_CHECK_MS);
+                // The periodic worker constraint is CONNECTED, not UNMETERED, so each pair's
+                // allowOnMobile flag is what gates mobile data use.
+                boolean metered = isMeteredNetwork(cm);
+                List<Integer> pairs = pairsToSyncNow(config, metered);
+                if (pairs.size() < config.links.size()) {
+                    // say so on each folder, or a sync that is waiting for Wi-Fi is
+                    // indistinguishable from one that is idle and up to date
+                    stampPairs(peergosDir, config, pairsBlockedOnMobile(config), MOBILE_BLOCKED, SyncStatus.ERROR);
+                    retryWhenUnmetered(context, peergosDir);
+                }
+                if (pairs.isEmpty()) {
+                    System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                    return true;
                 }
 
+                boolean ranClean = false;
                 try {
-                    // the desktop runner clears this each pass; without it here an error from
-                    // a past pass keeps the whole app reporting a problem it has recovered from
-                    status.setError(null);
-                    DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
-                            maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
-                                    context, crypto), peergosDir,
-                            status,
-                            m -> {
-                                status.setStatus(m);
-                                LOG.info(m);
-                            },
-                            e -> {
-                                if (e != null) {
-                                    Throwable cause = getCause(e);
-                                    if (!(cause instanceof UnknownHostException)) {
-                                        status.setError(DirectorySync.describeError(cause));
+                    while (true) {
+                        List<Integer> passPairs = pairs;
+                        Timer meteredWatch = null;
+                        AtomicBoolean thisPass = new AtomicBoolean(true);
+                        // Metered-ness is sampled, because a default network callback missed a
+                        // handover and let a pass spend minutes of mobile data. Only needed while
+                        // a folder that disallows mobile is in this pass.
+                        if (! metered && cm != null && config.allowOnMobile.contains(false)) {
+                            meteredWatch = new Timer("peergos-metered-watch", true);
+                            meteredWatch.schedule(new TimerTask() {
+                                @Override
+                                public void run() {
+                                    // cancelling the timer cannot interrupt a tick already running,
+                                    // so the pass hands the flag over rather than stopping the next
+                                    synchronized (thisPass) {
+                                        if (thisPass.get() && isMeteredNetwork(cm))
+                                            status.cancel(MOBILE_BLOCKED);
                                     }
-                                    LOG.log(Level.WARNING, cause, cause::getMessage);
                                 }
-                            }, network, crypto);
-                } finally {
-                    if (meteredWatch != null) {
-                        synchronized (thisPass) {
-                            thisPass.set(false);
+                            }, METERED_FIRST_CHECK_MS, METERED_CHECK_MS);
                         }
-                        meteredWatch.cancel();
-                    }
-                    // read before resume(), which clears the reason
-                    if (status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
+                        try {
+                            // the desktop runner clears the error each pass; without it here one
+                            // failure keeps the app reporting a problem it has recovered from
+                            status.setError(null);
+                            // set before the first remote call, so a cycle is visible even when it
+                            // is a retry that fails again in the same place
+                            status.setStatus(SyncStatus.SYNCING);
+                            stampPairs(peergosDir, config, passPairs, null, SyncStatus.SYNCING);
+                            ranClean = DirectorySync.syncDirs(pick(config.links, passPairs), pick(config.localDirs, passPairs),
+                                    pick(config.syncLocalDeletes, passPairs), pick(config.syncRemoteDeletes, passPairs),
+                                    maxDownloadParallelism, minFreeSpacePercent, true,
+                                    uri -> new AndroidSyncFileSystem(Uri.parse(uri), context, crypto), peergosDir,
+                                    status,
+                                    m -> {
+                                        status.setStatus(m);
+                                        LOG.info(m);
+                                    },
+                                    e -> {
+                                        if (e == null)
+                                            return;
+                                        Throwable cause = getCause(e);
+                                        String why = DirectorySync.describeError(cause);
+                                        if (e instanceof DirectorySync.PairFailure)
+                                            stampPairs(peergosDir, config,
+                                                    Collections.singletonList(passPairs.get(((DirectorySync.PairFailure) e).pair)),
+                                                    why, SyncStatus.ERROR);
+                                        else if (!(cause instanceof UnknownHostException))
+                                            status.setError(why);
+                                        LOG.log(Level.WARNING, cause, cause::getMessage);
+                                    }, network, crypto, passPairs.size() == config.links.size());
+                            // a pass that could not open a single link never reaches a folder,
+                            // so the folders would keep showing the last pass's result
+                            if (! ranClean && status.getError().isPresent())
+                                stampPairs(peergosDir, config, passPairs, status.getError().get(), SyncStatus.ERROR);
+                        } finally {
+                            if (meteredWatch != null) {
+                                synchronized (thisPass) {
+                                    thisPass.set(false);
+                                }
+                                meteredWatch.cancel();
+                            }
+                        }
+                        // a handover onto mobile data stops the pass: the folders that do allow
+                        // mobile carry on without the others, rather than all of them stalling
+                        if (! status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
+                            break;
+                        stampPairs(peergosDir, config, pairsBlockedOnMobile(config), MOBILE_BLOCKED, SyncStatus.ERROR);
                         retryWhenUnmetered(context, peergosDir);
+                        metered = true;
+                        List<Integer> allowed = pairsToSyncNow(config, true);
+                        if (allowed.isEmpty() || allowed.equals(pairs))
+                            break;
+                        pairs = allowed;
+                        status.resume();
+                    }
+                } finally {
                     // syncDirs only self-clears cancellation when it starts another pair, so a
                     // cancel during the last one would leave the shared status wedged.
                     status.resume();
                 }
-                return true;
+                // a pause is the user's choice, not a folder left behind
+                boolean clean = status.isPaused() || ranClean;
+                if (! clean)
+                    retrySoon(context, peergosDir);
+                return clean;
             } catch (MalformedURLException e) {
                 e.printStackTrace();
                 return true;
@@ -252,7 +264,7 @@ public class SyncWorker extends Worker {
                     // a pass can fail before it reaches any folder, and the reason each one
                     // last showed is then stale: it says mobile data when the server is down
                     if (syncConfig != null)
-                        reportOnPairs(peergosDir, syncConfig, msg, false);
+                        stampPairs(peergosDir, syncConfig, pairsToSyncNow(syncConfig, false), msg, SyncStatus.ERROR);
                 }
                 LOG.log(Level.WARNING, cause, cause::getMessage);
                 return false;
@@ -260,32 +272,69 @@ public class SyncWorker extends Worker {
         }
     }
 
-    /** Wi-Fi can come back long before the next periodic run, so let WorkManager start a
-     *  pass as soon as an unmetered network is up. Unique work, so repeated blocks replace
-     *  each other rather than stack, and it outlives this process. */
+    /** Wi-Fi can come back long before the next scheduled pass, so start one as soon as an
+     *  unmetered network is up. */
     private static void retryWhenUnmetered(Context context, Path peergosDir) {
-        WorkManager.getInstance(context).enqueueUniqueWork("peergos-sync-unmetered",
-                ExistingWorkPolicy.REPLACE,
+        enqueueRetry(context, peergosDir, "peergos-sync-unmetered", NetworkType.UNMETERED, 0);
+    }
+
+    /** A folder left needing attention is worth another go in a minute, rather than at the
+     *  next scheduled pass a quarter of an hour away. */
+    private static void retrySoon(Context context, Path peergosDir) {
+        enqueueRetry(context, peergosDir, "peergos-sync-retry", NetworkType.CONNECTED, 60);
+    }
+
+    /** Unique work, so repeated failures replace each other rather than stack up, and it
+     *  outlives this process. */
+    private static void enqueueRetry(Context context, Path peergosDir, String name,
+                                     NetworkType network, long delaySeconds) {
+        WorkManager.getInstance(context).enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE,
                 new OneTimeWorkRequest.Builder(SyncWorker.class)
                         .setConstraints(new Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.UNMETERED)
+                                .setRequiredNetworkType(network)
                                 .build())
+                        .setInitialDelay(delaySeconds, TimeUnit.SECONDS)
                         .setInputData(new Data.Builder()
                                 .putString(PEERGOS_PATH, peergosDir.toString())
                                 .build())
                         .build());
     }
 
-    /** @param mobileOnly report only on the folders that mobile data is blocking */
-    private static void reportOnPairs(Path peergosDir, SyncConfig config, String error, boolean mobileOnly) {
-        for (int i = 0; i < config.links.size(); i++) {
-            if (mobileOnly && config.allowOnMobile.get(i))
-                continue;
+    /** The folders to sync now: on mobile data, only the ones that allow it. */
+    private static List<Integer> pairsToSyncNow(SyncConfig config, boolean metered) {
+        List<Integer> pairs = new ArrayList<>();
+        for (int i = 0; i < config.links.size(); i++)
+            if (! metered || config.allowOnMobile.get(i))
+                pairs.add(i);
+        return pairs;
+    }
+
+    private static <T> List<T> pick(List<T> all, List<Integer> indices) {
+        List<T> some = new ArrayList<>(indices.size());
+        for (int i : indices)
+            some.add(all.get(i));
+        return some;
+    }
+
+    /** What each folder shows between passes: the pass itself only reports on a folder once
+     *  it reaches it, which is too late to explain a wait, or a failure before the first one. */
+    private static void stampPairs(Path peergosDir, SyncConfig config, List<Integer> pairs,
+                                   String error, SyncStatus state) {
+        for (int i : pairs) {
             PairStatus pair = new PairStatus(peergosDir,
                     PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
             pair.setError(error);
-            pair.setStatus(SyncStatus.ERROR);
+            pair.setStatus(state);
         }
+    }
+
+    /** The folders mobile data is holding up. */
+    private static List<Integer> pairsBlockedOnMobile(SyncConfig config) {
+        List<Integer> blocked = new ArrayList<>();
+        for (int i = 0; i < config.links.size(); i++)
+            if (! config.allowOnMobile.get(i))
+                blocked.add(i);
+        return blocked;
     }
 
     private static boolean isMeteredNetwork(ConnectivityManager cm) {
