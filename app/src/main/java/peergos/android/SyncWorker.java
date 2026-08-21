@@ -206,6 +206,9 @@ public class SyncWorker extends Worker {
                 }
 
                 try {
+                    // the desktop runner clears this each pass; without it here an error from
+                    // a past pass keeps the whole app reporting a problem it has recovered from
+                    status.setError(null);
                     DirectorySync.syncDirs(links, localDirs, syncLocalDeletes, syncRemoteDeletes,
                             maxDownloadParallelism, minFreeSpacePercent, true, uri -> new AndroidSyncFileSystem(Uri.parse(uri),
                                     context, crypto), peergosDir,
