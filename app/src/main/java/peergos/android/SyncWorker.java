@@ -85,7 +85,9 @@ public class SyncWorker extends Worker {
     @Override
     public Result doWork() {
         Path peergosDir = Paths.get(getInputData().getString(PEERGOS_PATH));
-        return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.failure();
+        // retry, not failure: failure is terminal, so a pass that lost the network would
+        // wait for the next periodic run instead of coming back with the connection
+        return runSyncOnce(getApplicationContext(), peergosDir) ? Result.success() : Result.retry();
     }
 
     /**
@@ -101,6 +103,7 @@ public class SyncWorker extends Worker {
             // success rather than failure, or WorkManager would back the schedule off
             if (status.isPaused())
                 return true;
+            SyncConfig syncConfig = null;
             try {
                 System.out.println("SYNC: starting work");
                 Crypto crypto = Main.initCrypto(new ScryptAndroid());
@@ -108,7 +111,7 @@ public class SyncWorker extends Worker {
                 Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
 
                 boolean jsonExists = jsonSyncConfig.toFile().exists();
-                SyncConfig syncConfig = jsonExists ?
+                syncConfig = jsonExists ?
                         SyncConfig.fromJson((Map<String, Object>) JSONParser.parse(new String(Files.readAllBytes(jsonSyncConfig)))) :
                         SyncConfig.fromArgs(Args.parse(new String[]{"-run-once", "true"}, Optional.of(oldConfigFile), false));
                 // a fresh process starts with the flag clear, so take it from the config
@@ -171,7 +174,7 @@ public class SyncWorker extends Worker {
                     if (fLinks.size() < links.size()) {
                         // say so on each folder, or a sync that is waiting for Wi-Fi is
                         // indistinguishable from one that is idle and up to date
-                        reportMobileDataBlocked(peergosDir, syncConfig);
+                        reportOnPairs(peergosDir, syncConfig, MOBILE_BLOCKED, true);
                         retryWhenUnmetered(context, peergosDir);
                     }
                     if (fLinks.isEmpty()) {
@@ -215,7 +218,7 @@ public class SyncWorker extends Worker {
                                 if (e != null) {
                                     Throwable cause = getCause(e);
                                     if (!(cause instanceof UnknownHostException)) {
-                                        status.setError(cause.getMessage());
+                                        status.setError(DirectorySync.describeError(cause));
                                     }
                                     LOG.log(Level.WARNING, cause, cause::getMessage);
                                 }
@@ -240,11 +243,14 @@ public class SyncWorker extends Worker {
                 return true;
             } catch (Exception e) {
                 Throwable cause = getCause(e);
-                if (cause instanceof UnknownHostException)
-                    return false;
-                String msg = cause.getMessage();
-                if (msg != null && !msg.trim().isEmpty())
+                String msg = DirectorySync.describeError(cause);
+                if (msg != null && ! msg.trim().isEmpty()) {
                     status.setError(msg);
+                    // a pass can fail before it reaches any folder, and the reason each one
+                    // last showed is then stale: it says mobile data when the server is down
+                    if (syncConfig != null)
+                        reportOnPairs(peergosDir, syncConfig, msg, false);
+                }
                 LOG.log(Level.WARNING, cause, cause::getMessage);
                 return false;
             }
@@ -267,13 +273,14 @@ public class SyncWorker extends Worker {
                         .build());
     }
 
-    private static void reportMobileDataBlocked(Path peergosDir, SyncConfig config) {
+    /** @param mobileOnly report only on the folders that mobile data is blocking */
+    private static void reportOnPairs(Path peergosDir, SyncConfig config, String error, boolean mobileOnly) {
         for (int i = 0; i < config.links.size(); i++) {
-            if (config.allowOnMobile.get(i))
+            if (mobileOnly && config.allowOnMobile.get(i))
                 continue;
             PairStatus pair = new PairStatus(peergosDir,
                     PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
-            pair.setError(MOBILE_BLOCKED);
+            pair.setError(error);
             pair.setStatus(SyncStatus.ERROR);
         }
     }
