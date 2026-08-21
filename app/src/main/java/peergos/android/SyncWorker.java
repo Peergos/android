@@ -23,6 +23,7 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -156,15 +157,19 @@ public class SyncWorker extends Worker {
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each pair's
                 // allowOnMobile flag is what gates mobile data use.
                 boolean metered = isMeteredNetwork(cm);
+                LocalDateTime passStart = LocalDateTime.now();
                 List<Integer> pairs = metered ? pairsAllowedOnMobile(config) : allPairs(config);
                 if (pairs.size() < config.links.size()) {
-                    // say so on each folder, or a sync that is waiting for Wi-Fi is
-                    // indistinguishable from one that is idle and up to date
-                    reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config));
+                    // this pass cannot check them, so they need the user: say so on each one, or
+                    // a folder waiting for Wi-Fi looks the same as one that is up to date
+                    stampPairs(peergosDir, config, pairsBlockedOnMobile(config), MOBILE_BLOCKED, SyncStatus.ERROR);
                     retryWhenUnmetered(context, peergosDir);
                 }
                 if (pairs.isEmpty()) {
-                    System.out.println("SYNC: on metered network and no pairs allow mobile data; skipping");
+                    // stamps the time as well, so the next check shows as having happened rather
+                    // than the app looking stalled at whenever it last managed to sync
+                    status.setStatus(MOBILE_BLOCKED);
+                    status.setStatus(SyncStatus.ERROR);
                     return true;
                 }
 
@@ -237,7 +242,7 @@ public class SyncWorker extends Worker {
                         // mobile carry on without the others, rather than all of them stalling
                         if (! status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
                             break;
-                        reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config));
+                        reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config), passStart);
                         retryWhenUnmetered(context, peergosDir);
                         metered = true;
                         List<Integer> allowed = pairsAllowedOnMobile(config);
@@ -343,13 +348,17 @@ public class SyncWorker extends Worker {
         }
     }
 
-    /** Mobile data holding a folder up is only worth the user's attention if that folder had
-     *  something to do: one that is already up to date simply checks again once Wi-Fi is back,
-     *  so it stays as it is rather than turning red. */
-    private static void reportMobileBlock(Path peergosDir, SyncConfig config, List<Integer> pairs) {
+    /** A handover onto mobile data mid pass only holds up the folders this pass had not
+     *  finished with. One it already synced is done, and turning it red for a network change
+     *  that cost it nothing would send the user looking for a problem that is not there. */
+    private static void reportMobileBlock(Path peergosDir, SyncConfig config, List<Integer> pairs,
+                                          LocalDateTime passStart) {
         for (int i : pairs) {
             PairStatus pair = pairStatus(peergosDir, config, i);
-            if (pair.getStatus() == SyncStatus.SYNCED && pair.getError().isEmpty())
+            boolean doneThisPass = pair.getStatus() == SyncStatus.SYNCED
+                    && pair.getError().isEmpty()
+                    && pair.getTime().filter(t -> t.isAfter(passStart)).isPresent();
+            if (doneThisPass)
                 continue;
             pair.setError(MOBILE_BLOCKED);
             pair.setStatus(SyncStatus.ERROR);
