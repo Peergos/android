@@ -19,6 +19,8 @@ import android.media.ThumbnailUtils;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.content.ContentValues;
@@ -128,6 +130,7 @@ import peergos.server.storage.auth.JdbcBatCave;
 import peergos.server.sync.PairLogger;
 import peergos.server.sync.SyncConfig;
 import peergos.server.sync.SyncRunner;
+import peergos.server.sync.SyncStatus;
 import peergos.server.util.Args;
 import peergos.server.util.Logging;
 import peergos.shared.Crypto;
@@ -803,9 +806,64 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** The desktop runner leaves 30s between passes. Scheduled background work cannot run
+     *  more often than every 15 minutes, so while the app is on screen it keeps the desktop's
+     *  cadence itself, which is also what makes the cycles visible to the user. */
+    private static final long ON_SCREEN_SYNC_INTERVAL_MS = 30_000;
+    private static final long SETTLE_CHECK_MS = 2_000;
+    private final Handler syncTicker = new Handler(Looper.getMainLooper());
+    private volatile long lastSettledMs = 0;
+    private final Runnable settleCheck = this::startGapWhenSettled;
+    private final Runnable syncTick = () -> {
+        if (! SyncWorker.onScreenCadence.get())
+            return;
+        if (SyncWorker.status.isPaused()) {
+            scheduleTick(ON_SCREEN_SYNC_INTERVAL_MS);
+            return;
+        }
+        // in process rather than through the foreground service: the app is on screen so the
+        // process is staying, and a service notification every 30s would be noise
+        ForkJoinPool.commonPool().submit(() -> {
+            try {
+                SyncWorker.runSyncOnce(getApplicationContext(),
+                        Paths.get(getFilesDir().getAbsolutePath()));
+            } finally {
+                startGapWhenSettled();
+            }
+        });
+    };
+
+    /** The gap runs from the moment the summary settles, green or red, rather than from the
+     *  end of the pass call: a pass can return with a folder still in flight, and counting
+     *  from there would start the next one early. */
+    private void startGapWhenSettled() {
+        if (! SyncWorker.onScreenCadence.get())
+            return;
+        if (SyncWorker.status.getStatus() == SyncStatus.SYNCING) {
+            syncTicker.removeCallbacks(settleCheck);
+            syncTicker.postDelayed(settleCheck, SETTLE_CHECK_MS);
+            return;
+        }
+        lastSettledMs = System.currentTimeMillis();
+        scheduleTick(ON_SCREEN_SYNC_INTERVAL_MS);
+    }
+
+    /** Only ever one tick pending: coming back to the app while a pass is still running would
+     *  otherwise leave that pass's own re-post running as a second chain. */
+    private void scheduleTick(long delayMs) {
+        syncTicker.removeCallbacks(settleCheck);
+        syncTicker.removeCallbacks(syncTick);
+        syncTicker.postDelayed(syncTick, delayMs);
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        SyncWorker.onScreenCadence.set(true);
+        // opening the app should show what is true now, not what was true before it was last
+        // put away, so check straight away unless a pass has just run
+        scheduleTick(Math.max(0, ON_SCREEN_SYNC_INTERVAL_MS
+                - (System.currentTimeMillis() - lastSettledMs)));
         if (pendingOp != null) {
             try {
                 yubiKitManager.startNfcDiscovery(new NfcConfiguration(), this, this::onYubiKeyDevice);
@@ -816,6 +874,13 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        // off screen the scheduled work takes over, so stop paying for a ticker and hand
+        // any folder still needing attention back to it
+        SyncWorker.onScreenCadence.set(false);
+        syncTicker.removeCallbacks(syncTick);
+        syncTicker.removeCallbacks(settleCheck);
+        if (SyncWorker.status.getStatus() == SyncStatus.ERROR)
+            SyncWorker.retrySoon(this, Paths.get(getFilesDir().getAbsolutePath()));
         yubiKitManager.stopNfcDiscovery(this);
     }
 

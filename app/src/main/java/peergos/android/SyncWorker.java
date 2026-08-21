@@ -70,6 +70,9 @@ public class SyncWorker extends Worker {
     public static final SyncRunner.StatusHolder status = new SyncRunner.StatusHolder();
     /** The key the worker reads its peergos dir from. */
     public static final String PEERGOS_PATH = "PEERGOS_PATH";
+    /** Set while the app is on screen and keeping its own gap between passes. Scheduled
+     *  retries stand down then, or the two chains together sync sooner than either means to. */
+    public static final AtomicBoolean onScreenCadence = new AtomicBoolean(false);
     private static final Logger LOG = Logging.LOG();
     /** How soon, and how often, a running pass rechecks that it is still off mobile data. */
     private static final long METERED_FIRST_CHECK_MS = 2_000;
@@ -153,7 +156,7 @@ public class SyncWorker extends Worker {
                 // The periodic worker constraint is CONNECTED, not UNMETERED, so each pair's
                 // allowOnMobile flag is what gates mobile data use.
                 boolean metered = isMeteredNetwork(cm);
-                List<Integer> pairs = pairsToSyncNow(config, metered);
+                List<Integer> pairs = metered ? pairsAllowedOnMobile(config) : allPairs(config);
                 if (pairs.size() < config.links.size()) {
                     // say so on each folder, or a sync that is waiting for Wi-Fi is
                     // indistinguishable from one that is idle and up to date
@@ -237,7 +240,7 @@ public class SyncWorker extends Worker {
                         reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config));
                         retryWhenUnmetered(context, peergosDir);
                         metered = true;
-                        List<Integer> allowed = pairsToSyncNow(config, true);
+                        List<Integer> allowed = pairsAllowedOnMobile(config);
                         if (allowed.isEmpty() || allowed.equals(pairs))
                             break;
                         pairs = allowed;
@@ -264,7 +267,7 @@ public class SyncWorker extends Worker {
                     // a pass can fail before it reaches any folder, and the reason each one
                     // last showed is then stale: it says mobile data when the server is down
                     if (syncConfig != null)
-                        stampPairs(peergosDir, syncConfig, pairsToSyncNow(syncConfig, false), msg, SyncStatus.ERROR);
+                        stampPairs(peergosDir, syncConfig, allPairs(syncConfig), msg, SyncStatus.ERROR);
                 }
                 LOG.log(Level.WARNING, cause, cause::getMessage);
                 return false;
@@ -280,7 +283,9 @@ public class SyncWorker extends Worker {
 
     /** A folder left needing attention is worth another go in a minute, rather than at the
      *  next scheduled pass a quarter of an hour away. */
-    private static void retrySoon(Context context, Path peergosDir) {
+    public static void retrySoon(Context context, Path peergosDir) {
+        if (onScreenCadence.get())
+            return;
         enqueueRetry(context, peergosDir, "peergos-sync-retry", NetworkType.CONNECTED, 60);
     }
 
@@ -300,11 +305,17 @@ public class SyncWorker extends Worker {
                         .build());
     }
 
-    /** The folders to sync now: on mobile data, only the ones that allow it. */
-    private static List<Integer> pairsToSyncNow(SyncConfig config, boolean metered) {
+    private static List<Integer> allPairs(SyncConfig config) {
         List<Integer> pairs = new ArrayList<>();
         for (int i = 0; i < config.links.size(); i++)
-            if (! metered || config.allowOnMobile.get(i))
+            pairs.add(i);
+        return pairs;
+    }
+
+    private static List<Integer> pairsAllowedOnMobile(SyncConfig config) {
+        List<Integer> pairs = new ArrayList<>();
+        for (int i = 0; i < config.links.size(); i++)
+            if (config.allowOnMobile.get(i))
                 pairs.add(i);
         return pairs;
     }
@@ -316,13 +327,17 @@ public class SyncWorker extends Worker {
         return some;
     }
 
+    private static PairStatus pairStatus(Path peergosDir, SyncConfig config, int pair) {
+        return new PairStatus(peergosDir,
+                PairLogger.hash(config.remotePaths.get(pair), config.localDirs.get(pair)));
+    }
+
     /** What each folder shows between passes: the pass itself only reports on a folder once
      *  it reaches it, which is too late to explain a wait, or a failure before the first one. */
     private static void stampPairs(Path peergosDir, SyncConfig config, List<Integer> pairs,
                                    String error, SyncStatus state) {
         for (int i : pairs) {
-            PairStatus pair = new PairStatus(peergosDir,
-                    PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
+            PairStatus pair = pairStatus(peergosDir, config, i);
             pair.setError(error);
             pair.setStatus(state);
         }
@@ -333,8 +348,7 @@ public class SyncWorker extends Worker {
      *  so it stays as it is rather than turning red. */
     private static void reportMobileBlock(Path peergosDir, SyncConfig config, List<Integer> pairs) {
         for (int i : pairs) {
-            PairStatus pair = new PairStatus(peergosDir,
-                    PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
+            PairStatus pair = pairStatus(peergosDir, config, i);
             if (pair.getStatus() == SyncStatus.SYNCED && pair.getError().isEmpty())
                 continue;
             pair.setError(MOBILE_BLOCKED);
