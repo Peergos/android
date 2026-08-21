@@ -157,7 +157,7 @@ public class SyncWorker extends Worker {
                 if (pairs.size() < config.links.size()) {
                     // say so on each folder, or a sync that is waiting for Wi-Fi is
                     // indistinguishable from one that is idle and up to date
-                    stampPairs(peergosDir, config, pairsBlockedOnMobile(config), MOBILE_BLOCKED, SyncStatus.ERROR);
+                    reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config));
                     retryWhenUnmetered(context, peergosDir);
                 }
                 if (pairs.isEmpty()) {
@@ -234,7 +234,7 @@ public class SyncWorker extends Worker {
                         // mobile carry on without the others, rather than all of them stalling
                         if (! status.getStopReason().filter(MOBILE_BLOCKED::equals).isPresent())
                             break;
-                        stampPairs(peergosDir, config, pairsBlockedOnMobile(config), MOBILE_BLOCKED, SyncStatus.ERROR);
+                        reportMobileBlock(peergosDir, config, pairsBlockedOnMobile(config));
                         retryWhenUnmetered(context, peergosDir);
                         metered = true;
                         List<Integer> allowed = pairsToSyncNow(config, true);
@@ -325,6 +325,20 @@ public class SyncWorker extends Worker {
                     PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
             pair.setError(error);
             pair.setStatus(state);
+        }
+    }
+
+    /** Mobile data holding a folder up is only worth the user's attention if that folder had
+     *  something to do: one that is already up to date simply checks again once Wi-Fi is back,
+     *  so it stays as it is rather than turning red. */
+    private static void reportMobileBlock(Path peergosDir, SyncConfig config, List<Integer> pairs) {
+        for (int i : pairs) {
+            PairStatus pair = new PairStatus(peergosDir,
+                    PairLogger.hash(config.remotePaths.get(i), config.localDirs.get(i)));
+            if (pair.getStatus() == SyncStatus.SYNCED && pair.getError().isEmpty())
+                continue;
+            pair.setError(MOBILE_BLOCKED);
+            pair.setStatus(SyncStatus.ERROR);
         }
     }
 
