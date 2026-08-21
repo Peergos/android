@@ -1,12 +1,14 @@
 package peergos.android;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.MediaMetadataRetriever;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.provider.DocumentsContract;
 
 import androidx.documentfile.provider.DocumentFile;
 
@@ -82,11 +84,43 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     private Optional<DocumentFile> getByPath(Path p) {
         if (p == null)
             return Optional.ofNullable(DocumentFile.fromTreeUri(context, rootUri));
+        Optional<DocumentFile> direct = fileByPath(p);
+        if (direct.isPresent())
+            return direct;
         List<String> path = new ArrayList<>(p.getNameCount());
         if (! p.toString().isBlank())
             for (int i=0; i < p.getNameCount(); i++)
                 path.add(p.getName(i).toString());
         return getDescendant(Optional.ofNullable(DocumentFile.fromTreeUri(context, rootUri)), path);
+    }
+
+    /** Walking a path with findFile lists every directory on it, which is a provider query
+     *  per entry and the dominant cost of a sync pass. Building the document uri from the
+     *  tree is a single query instead. Only files are resolved this way: such a document
+     *  cannot list children, and not every provider uses path shaped ids, so anything else
+     *  falls back to walking. */
+    private Optional<DocumentFile> fileByPath(Path p) {
+        if (p.toString().isBlank())
+            return Optional.empty();
+        for (Path name : p)
+            // the id is built by concatenation, so a traversal element would address a
+            // document outside the tree the user granted access to
+            if (name.toString().equals(".") || name.toString().equals(".."))
+                return Optional.empty();
+        try {
+            String docId = DocumentsContract.getTreeDocumentId(rootUri) + "/" + p;
+            Uri uri = DocumentsContract.buildDocumentUriUsingTree(rootUri, docId);
+            String[] columns = {DocumentsContract.Document.COLUMN_MIME_TYPE};
+            try (Cursor c = context.getContentResolver().query(uri, columns, null, null, null)) {
+                if (c == null || ! c.moveToFirst())
+                    return Optional.empty();
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(0)))
+                    return Optional.empty();
+            }
+            return Optional.ofNullable(DocumentFile.fromSingleUri(context, uri));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
     }
 
     private Optional<DocumentFile> getDescendant(Optional<DocumentFile> d, List<String> path) {

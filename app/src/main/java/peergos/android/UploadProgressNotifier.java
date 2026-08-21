@@ -63,7 +63,7 @@ class UploadProgressNotifier {
             int progress = size > 0 ? (int) Math.min(100, cumulative * 100 / size) : 0;
             try {
                 Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                        .setSmallIcon(R.mipmap.ic_launcher_round)
+                        .setSmallIcon(R.drawable.ic_notification)
                         .setContentTitle("Uploading " + filename)
                         .setContentText(progress + "%")
                         .setProgress(100, progress, size <= 0)
@@ -83,7 +83,7 @@ class UploadProgressNotifier {
         void fail(String message) {
             try {
                 Notification n = new NotificationCompat.Builder(ctx, CHANNEL_ID)
-                        .setSmallIcon(R.mipmap.ic_launcher_round)
+                        .setSmallIcon(R.drawable.ic_notification)
                         .setContentTitle("Upload failed: " + filename)
                         .setContentText(message)
                         .setAutoCancel(true)
