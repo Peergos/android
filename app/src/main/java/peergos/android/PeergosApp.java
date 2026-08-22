@@ -33,7 +33,10 @@ public class PeergosApp extends Application {
         super.onCreate();
         try {
             bootstrapMount();
-        } catch (Exception e) {
+        } catch (Exception | LinkageError e) {
+            // LinkageError as well: a core library method this platform lacks arrives as
+            // one, and the drive provider failing to start is no reason to kill the app.
+            // Not Throwable, which would swallow an out of memory error too
             Log.w(TAG, "DocumentsProvider mount bootstrap failed", e);
         }
     }
