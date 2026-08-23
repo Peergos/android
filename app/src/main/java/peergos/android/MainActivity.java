@@ -109,6 +109,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -187,6 +188,11 @@ public class MainActivity extends AppCompatActivity {
     ActivityResultLauncher requestPermissions;
     // requested on the http server thread, completed on the ui thread
     volatile CompletableFuture<String> chosenHostDir;
+    // a dialog can only go up while this activity is on screen
+    private volatile boolean resumed = false;
+    // folders at the last point we looked: only a count above it is one the user just added
+    private final AtomicInteger knownPairs = new AtomicInteger(-1);
+    private volatile Path syncConfigPath;
     String currentUploadSession = null;
     CompletableFuture<Boolean> gotPermissions = new CompletableFuture<>();
 
@@ -344,15 +350,48 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    /** One-shot prompt on the user's first sync: ask them to whitelist Peergos in
-     *  battery optimisation so the system doesn't suspend background sync. */
+    /** How many folders are configured, or -1 before the server has started or if the
+     *  file cannot be read. */
+    private int readPairCount() {
+        Path config = syncConfigPath;
+        if (config == null)
+            return -1;
+        try {
+            if (! config.toFile().exists())
+                return 0;
+            Map<String, Object> json = (Map<String, Object>) JSONParser.parse(
+                    new String(Files.readAllBytes(config)));
+            List<?> pairs = (List<?>) json.get("pairs");
+            return pairs == null ? 0 : pairs.size();
+        } catch (Exception e) {
+            // unreadable or malformed: worth no more than skipping the prompt, and this
+            // runs while the server is starting
+            return -1;
+        }
+    }
+
+    /** A folder was added, so the battery prompt is owed: raised now if this activity is on
+     *  screen, and otherwise on the next resume. Committed rather than applied, so it is not
+     *  lost if the app is killed in between. */
+    private void batteryPromptDue() {
+        getSharedPreferences("peergos-prefs", MODE_PRIVATE).edit()
+                .putBoolean("battery-prompt-pending", true).commit();
+        runOnUiThread(this::maybePromptBatteryOptimization);
+    }
+
+    /** Asked when a sync pair is added and Peergos is still battery optimised: whitelisting
+     *  it stops the system suspending background sync. Silent once it has been granted. */
     private void maybePromptBatteryOptimization() {
+        SharedPreferences prefs = getSharedPreferences("peergos-prefs", MODE_PRIVATE);
+        if (! prefs.getBoolean("battery-prompt-pending", false) || ! resumed || isFinishing() || isDestroyed())
+            return;
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        // left pending while Peergos is exempt, so revoking that in system settings later
+        // brings the ask back rather than waiting for the next folder
         if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName()))
             return;
-        SharedPreferences prefs = getSharedPreferences("peergos-prefs", MODE_PRIVATE);
-        if (prefs.getBoolean("battery-opt-dismissed", false))
-            return;
+        // asked once per pair added, however it is answered
+        prefs.edit().putBoolean("battery-prompt-pending", false).apply();
         new AlertDialog.Builder(this)
                 .setTitle("Keep syncing in the background")
                 .setMessage("Android may pause Peergos while your screen is off, which can stop syncs from completing. " +
@@ -366,8 +405,7 @@ public class MainActivity extends AppCompatActivity {
                         startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
                     }
                 })
-                .setNegativeButton("Not now", (d, w) ->
-                        prefs.edit().putBoolean("battery-opt-dismissed", true).apply())
+                .setNegativeButton("Not now", null)
                 .show();
     }
 
@@ -859,6 +897,15 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
+        // a folder removed while the app is on screen never reaches start(), so let the count
+        // fall back here. It is never raised here, or an addition would go unnoticed.
+        ForkJoinPool.commonPool().execute(() -> {
+            int pairs = readPairCount();
+            if (pairs >= 0)
+                knownPairs.updateAndGet(seen -> seen < 0 ? pairs : Math.min(seen, pairs));
+        });
+        maybePromptBatteryOptimization();
         SyncWorker.onScreenCadence.set(true);
         // opening the app should show what is true now, not what was true before it was last
         // put away, so check straight away unless a pass has just run
@@ -874,6 +921,7 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        resumed = false;
         // off screen the scheduled work takes over, so stop paying for a ticker and hand
         // any folder still needing attention back to it
         SyncWorker.onScreenCadence.set(false);
@@ -1326,15 +1374,19 @@ public class MainActivity extends AppCompatActivity {
 //                            .setExecutor(Executors.newFixedThreadPool(1))
 //                            .build());
             WorkManager backgroundWork = WorkManager.getInstance(this);
-            Path syncConfigPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+            syncConfigPath = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
+            knownPairs.set(readPairCount());
             SyncRunner syncer = new SyncRunner() {
                 @Override
                 public void start() {
-                    // start() is invoked by SyncConfigHandler after a pair has been
-                    // written to disk; a count of 1 means this is the first pair on
-                    // this install (or the first since the user removed everything).
-                    if (readPairCount() == 1)
-                        runOnUiThread(MainActivity.this::maybePromptBatteryOptimization);
+                    int pairs = readPairCount();
+                    if (pairs >= 0) {
+                        int before = knownPairs.getAndSet(pairs);
+                        // recorded before it is raised: a pair can be added while the folder
+                        // picker is still in front, and then it goes up on the next resume
+                        if (before >= 0 && pairs > before)
+                            batteryPromptDue();
+                    }
                     runNow();
                     // UPDATE so constraint changes (e.g. the UNMETERED → CONNECTED switch
                     // to enable per-pair mobile-data sync) take effect on upgrade without
@@ -1362,18 +1414,6 @@ public class MainActivity extends AppCompatActivity {
                     return SyncWorker.status;
                 }
 
-                private int readPairCount() {
-                    try {
-                        if (! syncConfigPath.toFile().exists())
-                            return 0;
-                        Map<String, Object> json = (Map<String, Object>) JSONParser.parse(
-                                new String(Files.readAllBytes(syncConfigPath)));
-                        List<?> pairs = (List<?>) json.get("pairs");
-                        return pairs == null ? 0 : pairs.size();
-                    } catch (IOException e) {
-                        return -1;
-                    }
-                }
             };
 
             Path oldSyncConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
