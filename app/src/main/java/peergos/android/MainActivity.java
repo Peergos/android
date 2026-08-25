@@ -610,21 +610,7 @@ public class MainActivity extends AppCompatActivity {
                 NetworkAccess network = buildLocalhostNetwork();
                 FileWrapper file = network.getFile(cap, "").join().get();
                 String filename = file.getName();
-                DownloadManager.Request request = new DownloadManager.Request(uri);
-                request.setTitle(filename);
-                request.setDescription("Downloading file...");
-                String mimeType = file.getFileProperties().mimeType;
-                request.setMimeType(mimeType);
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
-                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                DownloadForegroundService.increment();
-                ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
-                dm.enqueue(request);
-
-                MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
+                enqueueDownload(uri, filename, file.getFileProperties().mimeType);
             } else if (action.equals("zip")) {
                 List<AbsoluteCapability> caps = Arrays.stream(rest.split("\\$"))
                         .map(AbsoluteCapability::fromLink)
@@ -632,24 +618,37 @@ public class MainActivity extends AppCompatActivity {
                 NetworkAccess network = buildLocalhostNetwork();
                 Set<FileWrapper> files = network.retrieveAll(caps.stream().map(cap -> new EntryPoint(cap, "")).collect(Collectors.toList())).join();
                 String filename = files.size() == 1 ? files.stream().findFirst().get().getName() + ".zip" : "archive-" + LocalDateTime.now() + ".zip";
-                DownloadManager.Request request = new DownloadManager.Request(uri);
-                request.setTitle(filename);
-                request.setDescription("Downloading file...");
-                String mimeType = "application/zip";
-                request.setMimeType(mimeType);
                 System.out.println("Download manager downloading zip..");
-                request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
-                DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                DownloadForegroundService.increment();
-                ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
-                dm.enqueue(request);
-
-                MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-                ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
+                enqueueDownload(uri, filename, "application/zip");
+            } else if (action.equals("entry") || action.equals("entry-zip")) {
+                // an entry inside a zip has no capability of its own, so the url names the
+                // archive's, and the paths within it that the server is to take out
+                boolean asZip = action.equals("entry-zip");
+                String name = uri.getQueryParameter("name");
+                if (name == null || name.isEmpty())
+                    name = asZip ? "archive.zip" : "download";
+                String filename = name.substring(name.lastIndexOf('/') + 1);
+                String mimeType = uri.getQueryParameter("mime");
+                enqueueDownload(uri, filename, asZip || mimeType == null ? "application/zip" : mimeType);
             }
         }).start();
+    }
+
+    private void enqueueDownload(Uri uri, String filename, String mimeType) {
+        DownloadManager.Request request = new DownloadManager.Request(uri);
+        request.setTitle(filename);
+        request.setDescription("Downloading file...");
+        request.setMimeType(mimeType);
+        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
+        DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+        DownloadForegroundService.increment();
+        ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
+        dm.enqueue(request);
+
+        MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
+        ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     public class UploadHandler extends WebChromeClient {
