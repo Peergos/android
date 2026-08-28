@@ -36,6 +36,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -74,6 +76,14 @@ public class SyncWorker extends Worker {
     /** Set while the app is on screen and keeping its own gap between passes. Scheduled
      *  retries stand down then, or the two chains together sync sooner than either means to. */
     public static final AtomicBoolean onScreenCadence = new AtomicBoolean(false);
+
+    /** When the last pass finished, whoever ran it. The on-screen gap counts from any pass,
+     *  so a sync started from elsewhere is not followed by another one seconds later. */
+    public static final AtomicLong lastPassEndMs = new AtomicLong(0);
+
+    /** Passes running now. A pass waits for the one ahead of it on the lock, so a ticker that
+     *  joined that queue would sync again the moment the first one finished. */
+    public static final AtomicInteger passesInFlight = new AtomicInteger(0);
     private static final Logger LOG = Logging.LOG();
     /** How soon, and how often, a running pass rechecks that it is still off mobile data. */
     private static final long METERED_FIRST_CHECK_MS = 2_000;
@@ -104,6 +114,16 @@ public class SyncWorker extends Worker {
      * @return whether every folder in the pass synced, so a false asks for another go
      */
     public static boolean runSyncOnce(Context context, Path peergosDir) {
+        passesInFlight.incrementAndGet();
+        try {
+            return runPass(context, peergosDir);
+        } finally {
+            lastPassEndMs.set(System.currentTimeMillis());
+            passesInFlight.decrementAndGet();
+        }
+    }
+
+    private static boolean runPass(Context context, Path peergosDir) {
         synchronized (lock) {
             // the scheduled work keeps firing while paused, so honour the flag here too
             if (status.isPaused())
