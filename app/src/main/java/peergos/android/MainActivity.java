@@ -858,6 +858,11 @@ public class MainActivity extends AppCompatActivity {
             scheduleTick(ON_SCREEN_SYNC_INTERVAL_MS);
             return;
         }
+        long wait = msBeforeNextPass();
+        if (wait > 0) {
+            scheduleTick(wait);
+            return;
+        }
         // in process rather than through the foreground service: the app is on screen so the
         // process is staying, and a service notification every 30s would be noise
         ForkJoinPool.commonPool().submit(() -> {
@@ -885,6 +890,17 @@ public class MainActivity extends AppCompatActivity {
         scheduleTick(ON_SCREEN_SYNC_INTERVAL_MS);
     }
 
+    /** How long to hold off the next automatic pass. A pass running now is worth waiting for
+     *  rather than queueing behind, and one that has just run - sync now, a folder just added,
+     *  the scheduled worker - leaves the rest of the gap to run. A clock that has gone
+     *  backwards syncs rather than stalling. */
+    private long msBeforeNextPass() {
+        if (SyncWorker.passesInFlight.get() > 0)
+            return SETTLE_CHECK_MS;
+        long since = System.currentTimeMillis() - Math.max(lastSettledMs, SyncWorker.lastPassEndMs.get());
+        return since >= 0 && since < ON_SCREEN_SYNC_INTERVAL_MS ? ON_SCREEN_SYNC_INTERVAL_MS - since : 0;
+    }
+
     /** Only ever one tick pending: coming back to the app while a pass is still running would
      *  otherwise leave that pass's own re-post running as a second chain. */
     private void scheduleTick(long delayMs) {
@@ -908,8 +924,7 @@ public class MainActivity extends AppCompatActivity {
         SyncWorker.onScreenCadence.set(true);
         // opening the app should show what is true now, not what was true before it was last
         // put away, so check straight away unless a pass has just run
-        scheduleTick(Math.max(0, ON_SCREEN_SYNC_INTERVAL_MS
-                - (System.currentTimeMillis() - lastSettledMs)));
+        scheduleTick(msBeforeNextPass());
         if (pendingOp != null) {
             try {
                 yubiKitManager.startNfcDiscovery(new NfcConfiguration(), this, this::onYubiKeyDevice);
