@@ -4,16 +4,19 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
 import android.provider.DocumentsContract;
+import android.util.Log;
 
 import java.nio.file.Path;
 import java.util.Optional;
 
 import peergos.server.mount.MountBackend;
 import peergos.server.webdav.MountConfig;
+import peergos.android.calendar.PeergosAccount;
 import peergos.shared.user.UserContext;
 
 public class DocumentsProviderBackend implements MountBackend {
 
+    private static final String TAG = "PeergosMount";
     public static final String AUTHORITY = "peergos.android.documents";
 
     private final Context appContext;
@@ -28,8 +31,22 @@ public class DocumentsProviderBackend implements MountBackend {
         PeergosSession.publish(context, context.network, context.crypto);
         active = true;
         notifyRoots();
+        // This is the one moment the app has a signed-in session without the WebView, which
+        // is exactly what the calendar sync adapter needs, so the account is registered here
+        // rather than given a credential path of its own.
+        try {
+            PeergosAccount.requestSync(PeergosAccount.ensure(appContext, context.username));
+        } catch (RuntimeException e) {
+            // A missing accounts permission should not take the drive mount down with it.
+            Log.w(TAG, "Could not register the Peergos account for calendar sync", e);
+        }
     }
 
+    /**
+     * Leaves the account and its calendars in place. Without a session the sync adapter is
+     * a no-op, so the calendars simply stop updating; removing the account would delete
+     * them from the device every time the mount was toggled.
+     */
     @Override
     public void disable() {
         PeergosSession.clear();

@@ -462,6 +462,14 @@ public class MainActivity extends AppCompatActivity {
                 ActivityCompat.requestPermissions(this, new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1);
             }
         }
+        // The calendar sync adapter runs in this process, so its writes to the calendar
+        // provider need the permission granted to the app, not just declared.
+        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
+                android.Manifest.permission.WRITE_CALENDAR) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{
+                    android.Manifest.permission.READ_CALENDAR,
+                    android.Manifest.permission.WRITE_CALENDAR}, 2);
+        }
 
         requestPermissions = registerForActivityResult(new RequestMultiplePermissions(), m -> {
             System.out.println("PERMISSIONS");
