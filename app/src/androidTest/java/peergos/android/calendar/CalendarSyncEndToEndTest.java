@@ -46,16 +46,15 @@ import peergos.shared.util.PathUtil;
  * The sync adapter against a real Peergos server, which is the only way to know that the
  * layout the mirror reads is the layout the calendar app writes.
  *
- * Needs a local server on 7777 (web-ui's {@code ant run}) and
- * {@code adb reverse tcp:7777 tcp:7777}, so the device reaches it as localhost. It has to
- * be localhost rather than the emulator's 10.0.2.2 alias for the host: the server rejects
- * a request whose Host header names anything else, and the app's network security config
- * only permits cleartext to localhost.
+ * Host and port come from instrumentation args, as in {@link peergos.android.SyncEndToEndTest}.
+ * The default is a local server on 7777 (web-ui's {@code ant run}) reached over
+ * {@code adb reverse tcp:7777 tcp:7777}, which has to be addressed as localhost: a server
+ * started that way only accepts a Host header naming itself. CI instead starts the server
+ * with {@code -listen-host 0.0.0.0}, which makes SubdomainHandler accept any IPv4 Host, and
+ * passes peergosHost=10.0.2.2 peergosPort=8000 to reach it as the host of the emulator.
  */
 @RunWith(AndroidJUnit4.class)
 public class CalendarSyncEndToEndTest {
-
-    private static final String SERVER = "http://localhost:7777";
 
     @Rule
     public GrantPermissionRule permissions = GrantPermissionRule.grant(
@@ -79,12 +78,15 @@ public class CalendarSyncEndToEndTest {
     public void signUp() throws Exception {
         context = InstrumentationRegistry.getInstrumentation().getTargetContext();
         Crypto crypto = Main.initCrypto(new ScryptAndroid());
+        android.os.Bundle args = InstrumentationRegistry.getArguments();
+        String host = args.getString("peergosHost", "localhost");
+        int port = Integer.parseInt(args.getString("peergosPort", "7777"));
         // false = not a public server: AndroidPoster then turns every GET into a POST with
         // an empty body, which is what a localhost instance accepts — HttpUtil.allowedQuery
         // rejects GETs unless the server is public. The app passes true because peergos.net
         // is public.
-        HttpPoster poster = new AndroidPoster(new URL(SERVER), false, Optional.empty(),
-                Optional.of("Peergos-android-calendar-test"));
+        HttpPoster poster = new AndroidPoster(new URL("http://" + host + ":" + port), false,
+                Optional.empty(), Optional.of("Peergos-android-calendar-test"));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
         NetworkAccess network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
                 7_000, crypto.hasher, false).join();
