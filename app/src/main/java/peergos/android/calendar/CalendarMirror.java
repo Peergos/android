@@ -21,13 +21,12 @@ import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;
 
 /**
- * Mirrors the Peergos calendars into CalendarContract.
+ * Keeps the Peergos calendars and CalendarContract in step.
  *
- * One direction only, for now: Peergos is the source and the platform side is a cache, so
- * the calendars are published read-only. That is a deliberate stopping point rather than
- * an oversight — a two-way adapter has to decide what happens when both sides changed, and
- * publishing writable calendars before that logic exists would invite edits it would then
- * have to throw away.
+ * Each pass uploads local edits first and then reconciles against Peergos, so the download
+ * half sees whatever the upload half just wrote — and restores anything the upload half
+ * decided it had lost, which is how a conflicted event gets its remote version back while
+ * the local edit survives alongside it as a new event.
  *
  * Events are keyed by _SYNC_ID, which holds the Peergos member name (the .ics file name).
  * That is the same key the CalDAV bridge uses as an href, and it survives an event moving
@@ -57,6 +56,7 @@ public class CalendarMirror {
             long calendarId = existing.containsKey(info.directory)
                     ? updateCalendar(existing.get(info.directory), info)
                     : insertCalendar(info);
+            changes += new CalendarUploader(provider, account, store).upload(calendarId, info.directory);
             changes += syncEvents(calendarId, info.directory);
         }
         for (Map.Entry<String, Long> gone : existing.entrySet()) {
@@ -106,7 +106,7 @@ public class CalendarMirror {
         values.put(CalendarContract.Calendars.NAME, info.directory);
         values.put(CalendarContract.Calendars.CALENDAR_DISPLAY_NAME, info.name);
         values.put(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
-                CalendarContract.Calendars.CAL_ACCESS_READ);
+                CalendarContract.Calendars.CAL_ACCESS_EDITOR);
         values.put(CalendarContract.Calendars.SYNC_EVENTS, 1);
         values.put(CalendarContract.Calendars.VISIBLE, 1);
         values.put(CalendarContract.Calendars.CALENDAR_TIME_ZONE, "UTC");

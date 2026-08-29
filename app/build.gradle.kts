@@ -82,6 +82,8 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
+    // GrantPermissionRule: the calendar provider refuses a process without the runtime grant
+    androidTestImplementation(libs.test.rules)
 }
 // ---------------------------------------------------------------------------
 // libs/Peergos.jar is built from the web-ui submodule rather than checked in.

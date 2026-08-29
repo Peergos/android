@@ -3,6 +3,6 @@
     android:contentAuthority="com.android.calendar"
     android:accountType="peergos.android.account"
     android:userVisible="true"
-    android:supportsUploading="false"
+    android:supportsUploading="true"
     android:allowParallelSyncs="false"
     android:isAlwaysSyncable="true" />
