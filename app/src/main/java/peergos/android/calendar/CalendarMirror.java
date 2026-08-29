@@ -46,8 +46,22 @@ public class CalendarMirror {
         this.store = store;
     }
 
+    /**
+     * Only one pass at a time. The framework will not run two syncs for the same account
+     * and authority at once, but a manual pass can overlap one it scheduled, and two
+     * passes interleaved insert every event twice: each reads the device state before the
+     * other has written its half.
+     */
+    private static final Object passLock = new Object();
+
     /** @return the number of events added, updated or removed. */
     public int sync() throws Exception {
+        synchronized (passLock) {
+            return runPass();
+        }
+    }
+
+    private int runPass() throws Exception {
         Map<String, Long> existing = existingCalendars();
         Set<String> wanted = new HashSet<>();
         int changes = 0;
@@ -141,6 +155,8 @@ public class CalendarMirror {
                         new String[]{Long.toString(calendarId), object.name});
             else
                 provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values.get());
+            // so a name appearing twice in one listing updates rather than inserting again
+            onDevice.put(object.name, etag);
             changes++;
         }
         List<String> removed = new ArrayList<>();

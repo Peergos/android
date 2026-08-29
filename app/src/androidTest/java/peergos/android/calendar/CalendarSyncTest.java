@@ -47,8 +47,18 @@ public class CalendarSyncTest {
         assertEquals(1, ContentResolver.getIsSyncable(account, CalendarContract.AUTHORITY));
         assertTrue("automatic sync should be on",
                 ContentResolver.getSyncAutomatically(account, CalendarContract.AUTHORITY));
-        assertFalse("a periodic sync should be scheduled",
-                ContentResolver.getPeriodicSyncs(account, CalendarContract.AUTHORITY).isEmpty());
+        // The sync manager records this asynchronously, so poll rather than read once.
+        boolean scheduled = false;
+        for (int i = 0; i < 40 && ! scheduled; i++) {
+            scheduled = ! ContentResolver.getPeriodicSyncs(account, CalendarContract.AUTHORITY).isEmpty();
+            if (! scheduled)
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+        }
+        assertTrue("a periodic sync should be scheduled", scheduled);
     }
 
     @Test
