@@ -68,6 +68,13 @@ public class DocumentsProviderBackend implements MountBackend {
         return active ? Optional.of("Files app") : Optional.empty();
     }
 
+    /** Calendars go through the platform's own sync account, so there is no bridge for a CalDAV
+     *  client to point at, and no contacts sync adapter yet. */
+    @Override
+    public boolean supportsCalendar() {
+        return true;
+    }
+
     private void notifyRoots() {
         ContentResolver cr = appContext.getContentResolver();
         Uri roots = DocumentsContract.buildRootsUri(AUTHORITY);
