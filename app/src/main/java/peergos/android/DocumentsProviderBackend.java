@@ -11,6 +11,7 @@ import java.util.Optional;
 
 import peergos.server.mount.MountBackend;
 import peergos.server.webdav.MountConfig;
+import peergos.android.calendar.CalendarPermission;
 import peergos.android.calendar.PeergosAccount;
 import peergos.shared.user.UserContext;
 
@@ -34,6 +35,7 @@ public class DocumentsProviderBackend implements MountBackend {
         // This is the one moment the app has a signed-in session without the WebView, which
         // is exactly what the calendar sync adapter needs, so the account is registered here
         // rather than given a credential path of its own.
+        CalendarPermission.onMounted();
         try {
             PeergosAccount.requestSync(PeergosAccount.ensure(appContext, context.username));
         } catch (RuntimeException e) {
@@ -51,6 +53,7 @@ public class DocumentsProviderBackend implements MountBackend {
     public void disable() {
         PeergosSession.clear();
         active = false;
+        CalendarPermission.onUnmounted();
         notifyRoots();
     }
 
