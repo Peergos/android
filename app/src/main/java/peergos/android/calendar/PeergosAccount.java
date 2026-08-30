@@ -65,6 +65,19 @@ public final class PeergosAccount {
                 Bundle.EMPTY, SYNC_INTERVAL_SECONDS);
     }
 
+    /**
+     * Stop syncing without removing the account. Removing it would delete the calendars from
+     * the device, so a user who turns the calendar off and on again would lose anything the
+     * platform calendar app hangs off those rows; leaving it dormant costs nothing.
+     */
+    public static void stopSyncing(Context context) {
+        for (Account account : AccountManager.get(context).getAccountsByType(TYPE)) {
+            ContentResolver.removePeriodicSync(account, CalendarContract.AUTHORITY, Bundle.EMPTY);
+            ContentResolver.setSyncAutomatically(account, CalendarContract.AUTHORITY, false);
+            ContentResolver.cancelSync(account, CalendarContract.AUTHORITY);
+        }
+    }
+
     /** Ask for a sync now, e.g. after the user changes something in the web UI. */
     public static void requestSync(Account account) {
         Bundle extras = new Bundle();

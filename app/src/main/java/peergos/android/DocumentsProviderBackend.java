@@ -29,17 +29,23 @@ public class DocumentsProviderBackend implements MountBackend {
 
     @Override
     public void enable(MountConfig config, UserContext context, Path peergosDir) {
+        // One login serves both: the session is published whichever feature asked for it, so
+        // syncing the calendar alone needs no second credential and shows no drive.
         PeergosSession.publish(context, context.network, context.crypto);
-        active = true;
+        active = config.mountDrive;
         notifyRoots();
+        if (! config.syncCalendar) {
+            PeergosAccount.stopSyncing(appContext);
+            return;
+        }
         // This is the one moment the app has a signed-in session without the WebView, which
         // is exactly what the calendar sync adapter needs, so the account is registered here
         // rather than given a credential path of its own.
-        CalendarPermission.onMounted();
+        CalendarPermission.onCalendarStarted();
         try {
             PeergosAccount.requestSync(PeergosAccount.ensure(appContext, context.username));
         } catch (RuntimeException e) {
-            // A missing accounts permission should not take the drive mount down with it.
+            // A missing accounts permission should not take the rest of the login down with it.
             Log.w(TAG, "Could not register the Peergos account for calendar sync", e);
         }
     }
@@ -53,7 +59,7 @@ public class DocumentsProviderBackend implements MountBackend {
     public void disable() {
         PeergosSession.clear();
         active = false;
-        CalendarPermission.onUnmounted();
+        CalendarPermission.onCalendarStopped();
         notifyRoots();
     }
 
