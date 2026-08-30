@@ -1,5 +1,7 @@
 package peergos.android;
 
+import peergos.android.calendar.CalendarPermission;
+
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions;
 import android.annotation.SuppressLint;
 import android.app.Activity;
@@ -190,6 +192,10 @@ public class MainActivity extends AppCompatActivity {
     volatile CompletableFuture<String> chosenHostDir;
     // a dialog can only go up while this activity is on screen
     private volatile boolean resumed = false;
+    // the calendar is only started when the drive is mounted, so that is when its permission
+    // is worth asking for rather than on launch
+    private final Runnable calendarPermissionAsker = this::requestCalendarPermission;
+    private volatile boolean askedForCalendar = false;
     // folders at the last point we looked: only a count above it is one the user just added
     private final AtomicInteger knownPairs = new AtomicInteger(-1);
     private volatile Path syncConfigPath;
@@ -909,10 +915,26 @@ public class MainActivity extends AppCompatActivity {
         syncTicker.postDelayed(syncTick, delayMs);
     }
 
+    /** The sync adapter runs in this process, so its writes to the calendar provider need the
+     *  permission granted to the app, not just declared in the manifest. Asked for once per
+     *  visit rather than on every mount, so a user who says no is not asked again and again. */
+    private void requestCalendarPermission() {
+        if (askedForCalendar)
+            return;
+        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
+                android.Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED)
+            return;
+        askedForCalendar = true;
+        runOnUiThread(() -> ActivityCompat.requestPermissions(this, new String[]{
+                android.Manifest.permission.READ_CALENDAR,
+                android.Manifest.permission.WRITE_CALENDAR}, 2));
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         resumed = true;
+        CalendarPermission.setAsker(calendarPermissionAsker);
         // a folder removed while the app is on screen never reaches start(), so let the count
         // fall back here. It is never raised here, or an addition would go unnoticed.
         ForkJoinPool.commonPool().execute(() -> {
@@ -936,6 +958,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         resumed = false;
+        CalendarPermission.clearAsker(calendarPermissionAsker);
         // off screen the scheduled work takes over, so stop paying for a ticker and hand
         // any folder still needing attention back to it
         SyncWorker.onScreenCadence.set(false);
