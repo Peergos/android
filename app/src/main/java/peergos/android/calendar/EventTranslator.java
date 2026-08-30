@@ -35,6 +35,11 @@ public final class EventTranslator {
         if (parts.isEmpty())
             return Optional.empty();
         ICal.Component event = parts.get(0);
+        // A calendar collection also holds tasks, which the contract has no table for, and
+        // a VTODO with a DTSTART would otherwise map cleanly onto an event row and appear
+        // on the phone as one.
+        if (! event.name.equals("VEVENT"))
+            return Optional.empty();
         Optional<ICal.Property> start = event.property("DTSTART");
         if (start.isEmpty())
             return Optional.empty();

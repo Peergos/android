@@ -137,6 +137,10 @@ public class CalendarMirror {
         Set<String> seen = new HashSet<>();
         int changes = 0;
         for (AppDataStore.ObjectRef object : store.listObjects(directory)) {
+            // Tasks share the calendar collection but have no place in CalendarContract,
+            // which models no such thing. The shard says so without reading the file.
+            if (object.shard.equals(CalendarStore.TASKS_DIR))
+                continue;
             seen.add(object.name);
             String etag = object.etag();
             if (etag.equals(onDevice.get(object.name)))

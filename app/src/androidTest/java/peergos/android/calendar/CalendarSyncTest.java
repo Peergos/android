@@ -111,6 +111,20 @@ public class CalendarSyncTest {
                 values.get(CalendarContract.Events.DTEND) == null);
     }
 
+    /**
+     * A calendar collection also carries tasks, which CalendarContract has no table for.
+     * The one with a DTSTART is the dangerous case: it would map cleanly onto an event row
+     * and show up on the phone's calendar as an event.
+     */
+    @Test
+    public void skipsTasks() {
+        assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                + "UID:milk\r\nSUMMARY:Buy milk\r\nDTSTART:20240315T090000Z\r\nDUE:20240315T170000Z\r\n"
+                + "END:VTODO\r\nEND:VCALENDAR\r\n", 1).isEmpty());
+        assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+                + "UID:someday\r\nSUMMARY:Someday\r\nEND:VTODO\r\nEND:VCALENDAR\r\n", 1).isEmpty());
+    }
+
     @Test
     public void skipsAnObjectWithNoStart() {
         assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
