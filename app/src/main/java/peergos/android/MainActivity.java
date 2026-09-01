@@ -356,6 +356,34 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
+    /** A download the page has already built in memory. A blob: url never reaches
+     *  our DownloadListener, so the page hands us the bytes instead. */
+    @JavascriptInterface
+    public void saveToDownloads(String filename, String mimeType, String content) {
+        new Thread(() -> {
+            String name = filename.replaceAll("[/\\\\:*?\"<>|]", "_");
+            try {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    runOnUiThread(() -> Toast.makeText(this, "Could not create download file", Toast.LENGTH_SHORT).show());
+                    return;
+                }
+                try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    out.write(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Saved to Downloads/" + name, Toast.LENGTH_LONG).show());
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Failed to save " + name + ": " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }).start();
+    }
+
     /** How many folders are configured, or -1 before the server has started or if the
      *  file cannot be read. */
     private int readPairCount() {
