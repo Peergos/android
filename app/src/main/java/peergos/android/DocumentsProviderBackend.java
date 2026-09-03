@@ -3,6 +3,8 @@ package peergos.android;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
+import android.provider.CalendarContract;
+import android.provider.ContactsContract;
 import android.provider.DocumentsContract;
 import android.util.Log;
 
@@ -11,8 +13,8 @@ import java.util.Optional;
 
 import peergos.server.mount.MountBackend;
 import peergos.server.webdav.MountConfig;
-import peergos.android.calendar.CalendarPermission;
-import peergos.android.calendar.PeergosAccount;
+import peergos.android.sync.PeergosAccount;
+import peergos.android.sync.SyncPermission;
 import peergos.shared.user.UserContext;
 
 public class DocumentsProviderBackend implements MountBackend {
@@ -29,37 +31,44 @@ public class DocumentsProviderBackend implements MountBackend {
 
     @Override
     public void enable(MountConfig config, UserContext context, Path peergosDir) {
-        // One login serves both: the session is published whichever feature asked for it, so
-        // syncing the calendar alone needs no second credential and shows no drive.
+        // One login serves all three: the session is published whichever feature asked for
+        // it, so syncing the calendar alone needs no second credential and shows no drive.
         PeergosSession.publish(context, context.network, context.crypto);
         active = config.mountDrive;
         notifyRoots();
-        if (! config.syncCalendar) {
-            PeergosAccount.stopSyncing(appContext);
+        // This is the one moment the app has a signed-in session without the WebView, which
+        // is exactly what the sync adapters need, so the account is registered here rather
+        // than given a credential path of its own.
+        sync(config.syncCalendar, CalendarContract.AUTHORITY, SyncPermission.CALENDAR, context.username);
+        sync(config.syncContacts, ContactsContract.AUTHORITY, SyncPermission.CONTACTS, context.username);
+    }
+
+    private void sync(boolean wanted, String authority, SyncPermission permission, String username) {
+        if (! wanted) {
+            PeergosAccount.stopSyncing(appContext, authority);
+            permission.onStopped();
             return;
         }
-        // This is the one moment the app has a signed-in session without the WebView, which
-        // is exactly what the calendar sync adapter needs, so the account is registered here
-        // rather than given a credential path of its own.
-        CalendarPermission.onCalendarStarted();
+        permission.onStarted();
         try {
-            PeergosAccount.requestSync(PeergosAccount.ensure(appContext, context.username));
+            PeergosAccount.startSyncing(PeergosAccount.ensure(appContext, username), authority);
         } catch (RuntimeException e) {
             // A missing accounts permission should not take the rest of the login down with it.
-            Log.w(TAG, "Could not register the Peergos account for calendar sync", e);
+            Log.w(TAG, "Could not register the Peergos account for " + authority + " sync", e);
         }
     }
 
     /**
-     * Leaves the account and its calendars in place. Without a session the sync adapter is
-     * a no-op, so the calendars simply stop updating; removing the account would delete
-     * them from the device every time the mount was toggled.
+     * Leaves the account, its calendars and its contacts in place. Without a session the
+     * sync adapters are no-ops, so those simply stop updating; removing the account would
+     * delete them from the device every time the mount was toggled.
      */
     @Override
     public void disable() {
         PeergosSession.clear();
         active = false;
-        CalendarPermission.onCalendarStopped();
+        SyncPermission.CALENDAR.onStopped();
+        SyncPermission.CONTACTS.onStopped();
         notifyRoots();
     }
 
@@ -68,10 +77,15 @@ public class DocumentsProviderBackend implements MountBackend {
         return active ? Optional.of("Files app") : Optional.empty();
     }
 
-    /** Calendars go through the platform's own sync account, so there is no bridge for a CalDAV
-     *  client to point at, and no contacts sync adapter yet. */
+    /** Calendars and contacts go through the platform's own sync account, so there is no
+     *  bridge for a CalDAV or CardDAV client to point at. */
     @Override
     public boolean supportsCalendar() {
+        return true;
+    }
+
+    @Override
+    public boolean supportsContacts() {
         return true;
     }
 

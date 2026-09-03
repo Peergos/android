@@ -1,4 +1,4 @@
-package peergos.android.calendar;
+package peergos.android.sync;
 
 import android.app.Service;
 import android.content.Intent;
