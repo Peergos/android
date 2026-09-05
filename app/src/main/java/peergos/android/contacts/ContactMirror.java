@@ -89,10 +89,13 @@ public class ContactMirror {
     private static final class Existing {
         final long id;
         final String etag;
+        /** Local changes not yet in Peergos: a card of ours it would be wrong to expect there. */
+        final boolean pending;
 
-        Existing(long id, String etag) {
+        Existing(long id, String etag, boolean pending) {
             this.id = id;
             this.etag = etag;
+            this.pending = pending;
         }
     }
 
@@ -120,7 +123,9 @@ public class ContactMirror {
         }
         List<Existing> removed = new ArrayList<>();
         for (Map.Entry<String, Existing> held : onDevice.entrySet()) {
-            if (! seen.contains(held.getKey()))
+            // A contact the upload half named but has not managed to write is missing from
+            // Peergos because it has never been there, not because it was deleted there.
+            if (! seen.contains(held.getKey()) && ! held.getValue().pending)
                 removed.add(held.getValue());
         }
         for (Existing gone : removed) {
@@ -135,14 +140,17 @@ public class ContactMirror {
     private Map<String, Existing> existingContacts(String directory) throws Exception {
         Map<String, Existing> byName = new HashMap<>();
         try (Cursor cursor = provider.query(asSyncAdapter(RawContacts.CONTENT_URI),
-                new String[]{RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1},
+                new String[]{RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.SYNC1, RawContacts.DIRTY},
                 ours(RawContacts.SYNC2 + "=?"), args(directory), null)) {
             while (cursor != null && cursor.moveToNext()) {
                 if (cursor.isNull(1))
                     continue;
                 String name = nameIn(directory, cursor.getString(1));
-                if (name != null)
-                    byName.put(name, new Existing(cursor.getLong(0), cursor.isNull(2) ? "" : cursor.getString(2)));
+                if (name == null)
+                    continue;
+                String etag = cursor.isNull(2) ? "" : cursor.getString(2);
+                byName.put(name, new Existing(cursor.getLong(0), etag,
+                        etag.isEmpty() || cursor.getInt(3) == 1));
             }
         }
         return byName;

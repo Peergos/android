@@ -102,9 +102,9 @@ public class ContactUploader {
         int pushed = 0;
         List<Row> fresh = new ArrayList<>();
         for (Row row : rows) {
-            // Contacts Peergos has never seen go up together: a phone handing over its whole
-            // address book is hundreds of these, and one commit each is hours of work.
-            if (! row.deleted && row.sourceId == null) {
+            // Contacts Peergos has no confirmed copy of go up together: a phone handing over
+            // its whole address book is hundreds of these, and one commit each is hours.
+            if (isNew(row, directory)) {
                 fresh.add(row);
                 continue;
             }
@@ -119,7 +119,20 @@ public class ContactUploader {
     }
 
     /**
-     * The new contacts, in chunks. A chunk is one commit and one provider transaction, and
+     * A contact Peergos holds no confirmed copy of: one that has never been named, or one
+     * named by a pass that did not get as far as writing it. Both are written by the same
+     * path, which is what makes an interrupted upload cost a repeat rather than a duplicate.
+     */
+    private static boolean isNew(Row row, String directory) {
+        if (row.deleted)
+            return false;
+        if (row.sourceId == null)
+            return true;
+        return row.etag.isEmpty() && ContactMirror.nameIn(directory, row.sourceId) != null;
+    }
+
+    /**
+     * The new contacts, in chunks. A chunk is one commit and two provider transactions, and
      * the chunking is what makes a sync the framework cancels half way still leave progress
      * behind: whole chunks are done, and what is left is still dirty and retried.
      */
@@ -138,39 +151,60 @@ public class ContactUploader {
 
     private int createChunk(List<Row> rows, String directory) throws Exception {
         Map<Long, String> names = new LinkedHashMap<>();
+        ArrayList<ContentProviderOperation> reserve = new ArrayList<>();
+        for (Row row : rows) {
+            if (row.sourceId != null) {
+                // named by an earlier pass that never got the card written
+                names.put(row.id, ContactMirror.nameIn(directory, row.sourceId));
+                continue;
+            }
+            String name = UUID.randomUUID().toString() + ContactStore.VCF_SUFFIX;
+            names.put(row.id, name);
+            reserve.add(ContentProviderOperation.newUpdate(asSyncAdapter(RawContacts.CONTENT_URI))
+                    .withSelection(RawContacts._ID + "=?", new String[]{Long.toString(row.id)})
+                    .withValue(RawContacts.SOURCE_ID, ContactMirror.sourceId(directory, name))
+                    .withValue(RawContacts.SYNC2, directory)
+                    .build());
+        }
+        // The name goes on the row before the card is written, so a pass that dies in
+        // between leaves a contact that is still dirty and still knows what it is called.
+        // Writing first and naming after is what turns an interrupted upload into a second
+        // copy of every contact in the chunk. The row stays dirty either way — only the
+        // confirmation below clears it — so nothing is treated as synced early.
+        if (! reserve.isEmpty())
+            provider.applyBatch(reserve);
+
         List<AppDataStore.NewObject> cards = new ArrayList<>();
         for (Row row : rows) {
+            String name = names.get(row.id);
             try {
-                String uid = UUID.randomUUID().toString();
-                String name = uid + ContactStore.VCF_SUFFIX;
-                names.put(row.id, name);
                 cards.add(new AppDataStore.NewObject(name, VCardWriter
-                        .create(uid, properties(row, dataRows(row.id))).getBytes(StandardCharsets.UTF_8)));
+                        .create(uidFor(name), properties(row, dataRows(row.id)))
+                        .getBytes(StandardCharsets.UTF_8)));
             } catch (Exception e) {
                 // as in the single case: one unreadable contact must not cost the chunk
                 Log.w(TAG, "Could not read contact " + row.id, e);
             }
         }
         Map<String, AppDataStore.ObjectRef> written = store.putObjects(directory, cards);
-        ArrayList<ContentProviderOperation> batch = new ArrayList<>();
+
+        ArrayList<ContentProviderOperation> confirm = new ArrayList<>();
         for (Map.Entry<Long, String> uploaded : names.entrySet()) {
             AppDataStore.ObjectRef stored = written.get(uploaded.getValue());
-            // Nothing recorded against a card that did not land, so it stays dirty and the
-            // next pass tries it again rather than the contact being lost.
+            // Nothing confirmed against a card that did not land, so it stays dirty and the
+            // next pass writes it again under the name it already has.
             if (stored == null)
                 continue;
-            batch.add(ContentProviderOperation.newUpdate(asSyncAdapter(RawContacts.CONTENT_URI))
+            confirm.add(ContentProviderOperation.newUpdate(asSyncAdapter(RawContacts.CONTENT_URI))
                     .withSelection(RawContacts._ID + "=?", new String[]{Long.toString(uploaded.getKey())})
-                    .withValue(RawContacts.SOURCE_ID, ContactMirror.sourceId(directory, uploaded.getValue()))
                     .withValue(RawContacts.SYNC1, stored.etag())
-                    .withValue(RawContacts.SYNC2, directory)
                     .withValue(RawContacts.DIRTY, 0)
                     .build());
         }
-        if (batch.isEmpty())
+        if (confirm.isEmpty())
             return 0;
-        provider.applyBatch(batch);
-        return batch.size();
+        provider.applyBatch(confirm);
+        return confirm.size();
     }
 
     /** A row that is not a plain creation: a deletion, or an edit to a contact Peergos has. */

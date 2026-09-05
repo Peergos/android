@@ -218,6 +218,54 @@ public class ContactSyncEndToEndTest {
         assertEquals("work/" + objects.get(0).name, sourceIdOf(rawContactId));
     }
 
+    /**
+     * The state an interrupted upload leaves behind: the contact has been given a name but
+     * its card never reached Peergos. It must be written under that name, not a new one —
+     * writing first and naming second is what filled an address book with duplicates.
+     */
+    @Test
+    public void aNamedButUnwrittenContactIsNotDuplicated() throws Exception {
+        App contacts = App.init(session, "contacts").join();
+        contacts.writeInternal(PathUtil.get("App.config"),
+                "{\"addressbooks\":[{\"name\":\"Work\",\"directory\":\"work\"}]}"
+                        .getBytes(StandardCharsets.UTF_8), null).join();
+        contacts.writeInternal(PathUtil.get("work/addressbook.inf"),
+                "{\"name\":\"Work\"}".getBytes(StandardCharsets.UTF_8), null).join();
+
+        ContentValues raw = new ContentValues();
+        raw.put(RawContacts.ACCOUNT_NAME, account.name);
+        raw.put(RawContacts.ACCOUNT_TYPE, account.type);
+        Uri inserted = context.getContentResolver().insert(RawContacts.CONTENT_URI, raw);
+        assertNotNull(inserted);
+        long rawContactId = ContentUris.parseId(inserted);
+        ContentValues name = new ContentValues();
+        name.put(Data.RAW_CONTACT_ID, rawContactId);
+        name.put(Data.MIMETYPE, StructuredName.CONTENT_ITEM_TYPE);
+        name.put(StructuredName.DISPLAY_NAME, "Interrupted");
+        assertNotNull(context.getContentResolver().insert(Data.CONTENT_URI, name));
+
+        // exactly what the upload half writes before it stores the card
+        ContentValues reserved = new ContentValues();
+        reserved.put(RawContacts.SOURCE_ID, "work/reserved.vcf");
+        reserved.put(RawContacts.SYNC2, "work");
+        assertEquals(1, provider.update(asSyncAdapter(RawContacts.CONTENT_URI), reserved,
+                RawContacts._ID + "=?", new String[]{Long.toString(rawContactId)}));
+
+        new ContactMirror(provider, account, store()).sync();
+
+        var objects = store().listObjects("work");
+        assertEquals("one card, not a second under a fresh name: " + describe(), 1, objects.size());
+        assertEquals("written under the name it already had", "reserved.vcf", objects.get(0).name);
+        String vcf = new String(store().read(objects.get(0)), StandardCharsets.UTF_8);
+        assertTrue("the uid follows the file name: " + vcf, vcf.contains("UID:reserved"));
+        assertTrue("and it is the contact we had: " + vcf, vcf.contains("FN:Interrupted"));
+
+        // the download half must not have read the missing card as a deletion
+        assertEquals("the contact survives: " + describe(), 1, contactCount());
+        assertEquals("and a second pass has nothing left to do",
+                0, new ContactMirror(provider, account, store()).sync());
+    }
+
     /** Peergos wins a conflict, and the local edit survives beside it rather than vanishing. */
     @Test
     public void aConflictKeepsBothVersions() throws Exception {
