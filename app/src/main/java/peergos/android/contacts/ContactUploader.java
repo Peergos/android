@@ -2,6 +2,7 @@ package peergos.android.contacts;
 
 import android.accounts.Account;
 import android.content.ContentProviderClient;
+import android.content.ContentProviderOperation;
 import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
@@ -23,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -47,6 +49,9 @@ import peergos.server.webdav.caldav.ContactStore;
 public class ContactUploader {
 
     private static final String TAG = "PeergosContacts";
+
+    /** How many new contacts share one commit. */
+    private static final int CHUNK = 100;
 
     /** The properties rebuilt from the data rows. PHOTO is not among them, on purpose. */
     private static final List<String> MANAGED = Arrays.asList(
@@ -95,7 +100,14 @@ public class ContactUploader {
 
     private int push(List<Row> rows, String directory) {
         int pushed = 0;
+        List<Row> fresh = new ArrayList<>();
         for (Row row : rows) {
+            // Contacts Peergos has never seen go up together: a phone handing over its whole
+            // address book is hundreds of these, and one commit each is hours of work.
+            if (! row.deleted && row.sourceId == null) {
+                fresh.add(row);
+                continue;
+            }
             try {
                 pushed += apply(row, directory) ? 1 : 0;
             } catch (Exception e) {
@@ -103,14 +115,68 @@ public class ContactUploader {
                 Log.w(TAG, "Could not upload contact " + row.id, e);
             }
         }
+        return pushed + createAll(fresh, directory);
+    }
+
+    /**
+     * The new contacts, in chunks. A chunk is one commit and one provider transaction, and
+     * the chunking is what makes a sync the framework cancels half way still leave progress
+     * behind: whole chunks are done, and what is left is still dirty and retried.
+     */
+    private int createAll(List<Row> rows, String directory) {
+        int pushed = 0;
+        for (int start = 0; start < rows.size(); start += CHUNK) {
+            List<Row> chunk = rows.subList(start, Math.min(rows.size(), start + CHUNK));
+            try {
+                pushed += createChunk(chunk, directory);
+            } catch (Exception e) {
+                Log.w(TAG, "Could not upload " + chunk.size() + " new contacts", e);
+            }
+        }
         return pushed;
     }
 
+    private int createChunk(List<Row> rows, String directory) throws Exception {
+        Map<Long, String> names = new LinkedHashMap<>();
+        List<AppDataStore.NewObject> cards = new ArrayList<>();
+        for (Row row : rows) {
+            try {
+                String uid = UUID.randomUUID().toString();
+                String name = uid + ContactStore.VCF_SUFFIX;
+                names.put(row.id, name);
+                cards.add(new AppDataStore.NewObject(name, VCardWriter
+                        .create(uid, properties(row, dataRows(row.id))).getBytes(StandardCharsets.UTF_8)));
+            } catch (Exception e) {
+                // as in the single case: one unreadable contact must not cost the chunk
+                Log.w(TAG, "Could not read contact " + row.id, e);
+            }
+        }
+        Map<String, AppDataStore.ObjectRef> written = store.putObjects(directory, cards);
+        ArrayList<ContentProviderOperation> batch = new ArrayList<>();
+        for (Map.Entry<Long, String> uploaded : names.entrySet()) {
+            AppDataStore.ObjectRef stored = written.get(uploaded.getValue());
+            // Nothing recorded against a card that did not land, so it stays dirty and the
+            // next pass tries it again rather than the contact being lost.
+            if (stored == null)
+                continue;
+            batch.add(ContentProviderOperation.newUpdate(asSyncAdapter(RawContacts.CONTENT_URI))
+                    .withSelection(RawContacts._ID + "=?", new String[]{Long.toString(uploaded.getKey())})
+                    .withValue(RawContacts.SOURCE_ID, ContactMirror.sourceId(directory, uploaded.getValue()))
+                    .withValue(RawContacts.SYNC1, stored.etag())
+                    .withValue(RawContacts.SYNC2, directory)
+                    .withValue(RawContacts.DIRTY, 0)
+                    .build());
+        }
+        if (batch.isEmpty())
+            return 0;
+        provider.applyBatch(batch);
+        return batch.size();
+    }
+
+    /** A row that is not a plain creation: a deletion, or an edit to a contact Peergos has. */
     private boolean apply(Row row, String directory) throws Exception {
         if (row.deleted)
             return delete(row, directory);
-        if (row.sourceId == null)
-            return create(row, directory);
         String name = ContactMirror.nameIn(directory, row.sourceId);
         if (name == null) {
             // Its source id names another book, so this pass is not the one that owns it.
@@ -136,13 +202,6 @@ public class ContactUploader {
         }
         remote.ifPresent(object -> store.deleteObject(directory, object));
         purge(row.id);
-        return true;
-    }
-
-    private boolean create(Row row, String directory) throws Exception {
-        String uid = UUID.randomUUID().toString();
-        write(directory, uid + ContactStore.VCF_SUFFIX,
-                VCardWriter.create(uid, properties(row, dataRows(row.id))), row.id);
         return true;
     }
 
@@ -179,13 +238,18 @@ public class ContactUploader {
         Log.i(TAG, "Kept a conflicting local edit as " + uid);
     }
 
+    /**
+     * An address book is flat, so a card can never move between shards and the write needs
+     * no listing to find where the old copy was — and the ref it returns is where the new
+     * ETag comes from. Both matter: a listing walks every contact in the book, and doing
+     * that twice per contact is quadratic in the size of the address book.
+     */
     private void write(String directory, String name, String vcf, long rawContactId) throws Exception {
-        store.putObject(directory, name, vcf.getBytes(StandardCharsets.UTF_8),
-                store.getObject(directory, name));
+        AppDataStore.ObjectRef stored = store.putObject(directory, name,
+                vcf.getBytes(StandardCharsets.UTF_8), Optional.empty());
         ContentValues values = new ContentValues();
         values.put(RawContacts.SOURCE_ID, ContactMirror.sourceId(directory, name));
-        values.put(RawContacts.SYNC1,
-                store.getObject(directory, name).map(AppDataStore.ObjectRef::etag).orElse(""));
+        values.put(RawContacts.SYNC1, stored.etag());
         values.put(RawContacts.SYNC2, directory);
         values.put(RawContacts.DIRTY, 0);
         provider.update(asSyncAdapter(RawContacts.CONTENT_URI), values,

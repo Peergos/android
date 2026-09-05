@@ -147,12 +147,13 @@ public class CalendarUploader {
     }
 
     private void write(String directory, String name, String ics, long rowId) throws Exception {
-        store.putObject(directory, name, ics.getBytes(StandardCharsets.UTF_8),
-                store.getObject(directory, name));
+        // The ref the write hands back is where the new ETag comes from: reading it through
+        // a listing instead would walk the whole shard again, having just invalidated it.
+        AppDataStore.ObjectRef stored = store.putObject(directory, name,
+                ics.getBytes(StandardCharsets.UTF_8), store.getObject(directory, name));
         ContentValues values = new ContentValues();
         values.put(CalendarContract.Events._SYNC_ID, name);
-        values.put(CalendarContract.Events.SYNC_DATA1,
-                store.getObject(directory, name).map(AppDataStore.ObjectRef::etag).orElse(""));
+        values.put(CalendarContract.Events.SYNC_DATA1, stored.etag());
         values.put(CalendarContract.Events.DIRTY, 0);
         provider.update(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values,
                 CalendarContract.Events._ID + "=?", new String[]{Long.toString(rowId)});
