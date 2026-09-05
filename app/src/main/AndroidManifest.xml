@@ -98,6 +98,12 @@
             <meta-data
                 android:name="android.content.SyncAdapter"
                 android:resource="@xml/contacts_syncadapter" />
+            <!-- The contacts provider looks for this on a sync adapter service to decide
+                 whether an account type can be edited. Without it the Peergos account is
+                 read only and the phone's contacts app will not offer to save to it. -->
+            <meta-data
+                android:name="android.provider.CONTACTS_STRUCTURE"
+                android:resource="@xml/contacts" />
         </service>
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

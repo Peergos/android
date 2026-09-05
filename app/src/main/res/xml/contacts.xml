@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Declares the Peergos account type as one the phone's own contacts app may write to.
+
+    Without this resource the account is read only and the editor offers no "save to
+    Peergos". Metadata alone is not enough: ExternalAccountType.areContactsWritable()
+    returns whether an <EditSchema> was parsed, so the schema below is what makes the
+    account a place a new contact can go.
+
+    The attributes here carry no android: prefix, on purpose. The edit schema is read with
+    AttributeSet.getAttributeBooleanValue(null, ...) — the null namespace — so a prefixed
+    attribute is silently invisible to it and reads as its default. Only the older
+    ContactsDataKind element, which we have no use for, takes android: attributes.
+
+    Every kind is one the vCard translator round trips, and no kind is here that it does
+    not, so a field the editor offers is a field that reaches Peergos. A kind with a type
+    column must list at least one Type and a kind without one must list none, or the parse
+    throws and the account type is dropped altogether.
+-->
+<ContactsAccountType>
+    <EditSchema>
+        <!--
+            Mandatory, along with photo: with an edit schema present the parser insists on
+            the name and photo kinds and refuses the type otherwise.
+
+            The supports* flags must all be true — AOSP checks each one and throws on a
+            false, phonetic included, so this is the only spelling of this element that
+            parses. That does mean the editor shows phonetic name fields, which a vCard N
+            has nowhere to put and which therefore stay on the phone. Both the current
+            spelling and the older supportsMidleName typo are given so the flag is read as
+            true whichever the device's contacts app is built from.
+        -->
+        <DataKind kind="name" maxOccurs="1"
+            supportsDisplayName="true"
+            supportsPrefix="true"
+            supportsMiddleName="true"
+            supportsMidleName="true"
+            supportsSuffix="true"
+            supportsPhoneticFamilyName="true"
+            supportsPhoneticMiddleName="true"
+            supportsPhoneticGivenName="true" />
+        <DataKind kind="photo" maxOccurs="1" />
+        <DataKind kind="nickname" maxOccurs="1" />
+        <!-- Exactly the types phoneType() names; anything else would come back as "other". -->
+        <DataKind kind="phone">
+            <Type type="mobile" />
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="work_mobile" />
+            <Type type="fax_home" />
+            <Type type="fax_work" />
+            <Type type="other_fax" />
+            <Type type="pager" />
+            <Type type="work_pager" />
+            <Type type="other" />
+        </DataKind>
+        <DataKind kind="email">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+        </DataKind>
+        <!--
+            needsStructured, because the upload half reads the street, city, region,
+            postcode and country columns to build an ADR. Without it the editor writes a
+            single formatted address and none of those columns, and the address would go
+            up empty.
+        -->
+        <DataKind kind="postal" needsStructured="true">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+        </DataKind>
+        <DataKind kind="organization" maxOccurs="1" />
+        <DataKind kind="website" />
+        <!-- BDAY is the one event a card carries, and its year is optional. -->
+        <DataKind kind="event" maxOccurs="1">
+            <Type type="birthday" yearOptional="true" />
+        </DataKind>
+        <DataKind kind="note" maxOccurs="1" />
+    </EditSchema>
+</ContactsAccountType>
