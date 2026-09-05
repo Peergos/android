@@ -31,6 +31,7 @@ import java.util.Random;
 import peergos.android.AndroidPoster;
 import peergos.android.PeergosSession;
 import peergos.android.ScryptAndroid;
+import peergos.android.sync.PeergosAccount;
 import peergos.server.Main;
 import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;

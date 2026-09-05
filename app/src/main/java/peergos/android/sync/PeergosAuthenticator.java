@@ -1,4 +1,4 @@
-package peergos.android.calendar;
+package peergos.android.sync;
 
 import android.accounts.AbstractAccountAuthenticator;
 import android.accounts.Account;

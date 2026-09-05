@@ -24,6 +24,8 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import peergos.android.sync.PeergosAccount;
+
 /**
  * What happens when the user edits an event in the platform calendar app, which is the
  * trigger the upload half depends on.

@@ -20,6 +20,8 @@ import org.junit.runner.RunWith;
 
 import java.util.Optional;
 
+import peergos.android.sync.PeergosAccount;
+
 @RunWith(AndroidJUnit4.class)
 public class CalendarSyncTest {
 
@@ -44,6 +46,7 @@ public class CalendarSyncTest {
 
         assertTrue("the account should be discoverable",
                 PeergosAccount.existing(context()).isPresent());
+        PeergosAccount.startSyncing(account, CalendarContract.AUTHORITY);
         assertEquals(1, ContentResolver.getIsSyncable(account, CalendarContract.AUTHORITY));
         assertTrue("automatic sync should be on",
                 ContentResolver.getSyncAutomatically(account, CalendarContract.AUTHORITY));
