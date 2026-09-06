@@ -3,9 +3,10 @@ package peergos.android.calendar;
 import android.content.ContentValues;
 import android.provider.CalendarContract;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import peergos.server.webdav.caldav.ICal;
@@ -15,19 +16,24 @@ import peergos.server.webdav.caldav.ICal;
  * into the app from the server jar, so the two surfaces cannot drift in how they read a
  * date or decide that an event recurs.
  *
- * Only the fields the web calendar app actually writes are mapped. Attendees, alarms and
- * exceptions to recurring events live in their own contract tables and are left for the
- * write path, which is where they start to matter.
+ * Only the fields the web calendar app actually writes are mapped. Attendees and exceptions
+ * to recurring events live in their own contract tables and are left for the write path,
+ * which is where they start to matter. Alarms are the exception: a reminder is the whole
+ * point of mirroring for many people, so a VALARM becomes a Reminders row, which is why a
+ * translation carries {@link Translation#reminderMinutes} beside the event row.
  */
 public final class EventTranslator {
 
     private EventTranslator() {}
 
+    /** An event row, and the one alarm the Reminders table can hold for it. */
+    public record Translation(ContentValues values, Optional<Integer> reminderMinutes) {}
+
     /**
-     * The contract row for one calendar object, or empty if it carries nothing we can
+     * The contract rows for one calendar object, or empty if it carries nothing we can
      * place on a calendar — no start date, or not an event at all.
      */
-    public static Optional<ContentValues> toEvent(String ics, long calendarId) {
+    public static Optional<Translation> translate(String ics, long calendarId) {
         Optional<ICal.Component> parsed = ICal.parse(ics);
         if (parsed.isEmpty())
             return Optional.empty();
@@ -47,12 +53,14 @@ public final class EventTranslator {
         if (from.isEmpty())
             return Optional.empty();
 
+        Optional<Integer> reminder = reminderMinutes(event);
         ContentValues values = new ContentValues();
         values.put(CalendarContract.Events.CALENDAR_ID, calendarId);
         values.put(CalendarContract.Events.TITLE, event.value("SUMMARY").orElse(""));
         event.value("DESCRIPTION").ifPresent(d -> values.put(CalendarContract.Events.DESCRIPTION, unescape(d)));
         event.value("LOCATION").ifPresent(l -> values.put(CalendarContract.Events.EVENT_LOCATION, unescape(l)));
         values.put(CalendarContract.Events.DTSTART, from.get().toEpochMilli());
+        values.put(CalendarContract.Events.STATUS, status(event));
 
         boolean allDay = isDate(start.get());
         values.put(CalendarContract.Events.ALL_DAY, allDay ? 1 : 0);
@@ -60,6 +68,8 @@ public final class EventTranslator {
         // device's zone; anything else keeps the zone its DTSTART named.
         values.put(CalendarContract.Events.EVENT_TIMEZONE,
                 allDay ? "UTC" : start.get().param("TZID").orElse("UTC"));
+
+        values.put(CalendarContract.Events.HAS_ALARM, reminder.isPresent() ? 1 : 0);
 
         Optional<String> rrule = event.value("RRULE");
         if (rrule.isPresent()) {
@@ -70,7 +80,56 @@ public final class EventTranslator {
         } else {
             values.put(CalendarContract.Events.DTEND, end(event, from.get(), allDay).toEpochMilli());
         }
-        return Optional.of(values);
+        return Optional.of(new Translation(values, reminder));
+    }
+
+    /**
+     * The alarm the phone can ring, read straight from a file. {@link #translate} works it
+     * out as it goes; this is the same answer without a ContentValues in the way, which is
+     * what makes the rule testable off a device.
+     */
+    public static Optional<Integer> reminderMinutes(String ics) {
+        return ICal.parse(ics)
+                .map(ICal.Component::scheduleComponents)
+                .filter(parts -> ! parts.isEmpty())
+                .flatMap(parts -> reminderMinutes(parts.get(0)));
+    }
+
+    /** The three states the contract shares with iCalendar. */
+    private static int status(ICal.Component event) {
+        String status = event.value("STATUS").orElse("").toUpperCase(Locale.ROOT);
+        if (status.equals("CANCELLED"))
+            return CalendarContract.Events.STATUS_CANCELED;
+        return status.equals("TENTATIVE")
+                ? CalendarContract.Events.STATUS_TENTATIVE
+                : CalendarContract.Events.STATUS_CONFIRMED;
+    }
+
+    /**
+     * How many minutes before the start this event's alarm rings, if it has one this
+     * platform can show. Only a trigger measured back from the start counts: the
+     * contract's Reminders table has no other shape — it takes minutes-before and nothing
+     * else — so an absolute trigger, or one measured from the end, is left to whatever
+     * wrote it rather than moved to a time it did not ask for. {@link ICalWriter} keeps to
+     * the same rule when an alarm goes back the other way.
+     */
+    private static Optional<Integer> reminderMinutes(ICal.Component event) {
+        for (ICal.Component alarm : event.children("VALARM")) {
+            Optional<ICal.Property> trigger = alarm.property("TRIGGER");
+            if (trigger.isEmpty())
+                continue;
+            ICal.Property property = trigger.get();
+            if (! ICalWriter.isMinutesBeforeStart(property.value,
+                    property.param("VALUE").orElse(null), property.param("RELATED").orElse(null)))
+                continue;
+            Optional<Duration> before = ICal.parseDuration(property.value.substring(1));
+            if (before.isEmpty())
+                continue;
+            long minutes = before.get().toMinutes();
+            if (minutes >= 0 && minutes <= Integer.MAX_VALUE)
+                return Optional.of((int) minutes);
+        }
+        return Optional.empty();
     }
 
     /** DTEND, or DTSTART plus DURATION, or a sensible default when the event gives neither. */
@@ -78,17 +137,17 @@ public final class EventTranslator {
         Optional<Instant> explicit = event.property("DTEND").flatMap(ICal::toInstant);
         if (explicit.isPresent())
             return explicit.get();
-        Optional<java.time.Duration> length = event.value("DURATION").flatMap(ICal::parseDuration);
+        Optional<Duration> length = event.value("DURATION").flatMap(ICal::parseDuration);
         if (length.isPresent())
             return start.plus(length.get());
-        return allDay ? start.plus(java.time.Duration.ofDays(1)) : start.plus(java.time.Duration.ofHours(1));
+        return allDay ? start.plus(Duration.ofDays(1)) : start.plus(Duration.ofHours(1));
     }
 
     private static String duration(ICal.Component event, Instant start, boolean allDay) {
         Optional<String> explicit = event.value("DURATION");
         if (explicit.isPresent())
             return explicit.get();
-        java.time.Duration length = java.time.Duration.between(start, end(event, start, allDay));
+        Duration length = Duration.between(start, end(event, start, allDay));
         if (allDay)
             return "P" + Math.max(1, length.toDays()) + "D";
         return "PT" + Math.max(1, length.toMinutes()) + "M";
@@ -116,10 +175,5 @@ public final class EventTranslator {
             }
         }
         return out.toString();
-    }
-
-    /** The zone an all-day event's midnight is measured in, for tests and callers. */
-    public static ZoneOffset allDayZone() {
-        return ZoneOffset.UTC;
     }
 }

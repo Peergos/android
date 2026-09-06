@@ -15,6 +15,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import peergos.server.webdav.caldav.AppDataStore;
@@ -70,6 +71,10 @@ public class CalendarMirror {
             long calendarId = existing.containsKey(info.directory)
                     ? updateCalendar(existing.get(info.directory), info)
                     : insertCalendar(info);
+            if (calendarId < 0) {
+                Log.w(TAG, "The provider would not take calendar " + info.directory);
+                continue;
+            }
             changes += new CalendarUploader(provider, account, store).upload(calendarId, info.directory);
             changes += syncEvents(calendarId, info.directory);
         }
@@ -99,10 +104,11 @@ public class CalendarMirror {
         return byDirectory;
     }
 
+    /** @return the new calendar's row id, or -1 if the provider refused the insert. */
     private long insertCalendar(AppDataStore.CollectionInfo info) throws Exception {
         Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Calendars.CONTENT_URI),
                 calendarValues(info));
-        return ContentUris.parseId(inserted);
+        return inserted == null ? -1 : ContentUris.parseId(inserted);
     }
 
     private long updateCalendar(long id, AppDataStore.CollectionInfo info) throws Exception {
@@ -146,19 +152,27 @@ public class CalendarMirror {
             if (etag.equals(onDevice.get(object.name)))
                 continue;
             String ics = new String(store.read(object), StandardCharsets.UTF_8);
-            var values = EventTranslator.toEvent(ics, calendarId);
-            if (values.isEmpty()) {
+            Optional<EventTranslator.Translation> translated = EventTranslator.translate(ics, calendarId);
+            if (translated.isEmpty()) {
                 Log.w(TAG, "Skipping " + directory + "/" + object.name + ": no usable start date");
                 continue;
             }
-            values.get().put(CalendarContract.Events._SYNC_ID, object.name);
-            values.get().put(CalendarContract.Events.SYNC_DATA1, etag);
-            if (onDevice.containsKey(object.name))
-                provider.update(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values.get(),
+            ContentValues values = translated.get().values();
+            values.put(CalendarContract.Events._SYNC_ID, object.name);
+            values.put(CalendarContract.Events.SYNC_DATA1, etag);
+            boolean known = onDevice.containsKey(object.name);
+            long eventId;
+            if (known) {
+                provider.update(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values,
                         CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events._SYNC_ID + "=?",
                         new String[]{Long.toString(calendarId), object.name});
-            else
-                provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values.get());
+                eventId = eventIdOf(calendarId, object.name);
+            } else {
+                Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values);
+                eventId = inserted == null ? -1 : ContentUris.parseId(inserted);
+            }
+            if (eventId >= 0)
+                syncReminder(eventId, translated.get().reminderMinutes(), known);
             // so a name appearing twice in one listing updates rather than inserting again
             onDevice.put(object.name, etag);
             changes++;
@@ -177,6 +191,35 @@ public class CalendarMirror {
         return changes;
     }
 
+    /**
+     * The event's alarm, as the one row the contract models: minutes before the start,
+     * shown by whatever the user's calendar app is. Rewritten wholesale rather than
+     * merged, so an alarm removed in Peergos stops ringing here too.
+     */
+    private void syncReminder(long eventId, Optional<Integer> minutes, boolean known) throws Exception {
+        // A row inserted a moment ago has no reminders to clear.
+        if (known)
+            provider.delete(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
+                    CalendarContract.Reminders.EVENT_ID + "=?", new String[]{Long.toString(eventId)});
+        if (minutes.isEmpty())
+            return;
+        ContentValues values = new ContentValues();
+        values.put(CalendarContract.Reminders.EVENT_ID, eventId);
+        values.put(CalendarContract.Reminders.MINUTES, minutes.get());
+        values.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
+        provider.insert(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI), values);
+    }
+
+    /** The row id of an event we have already written, or -1 if it has gone. */
+    private long eventIdOf(long calendarId, String name) throws Exception {
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
+                new String[]{CalendarContract.Events._ID},
+                CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events._SYNC_ID + "=?",
+                new String[]{Long.toString(calendarId), name}, null)) {
+            return cursor != null && cursor.moveToFirst() ? cursor.getLong(0) : -1;
+        }
+    }
+
     /** Member name to the ETag we stored when we last wrote it. */
     private Map<String, String> existingEvents(long calendarId) throws Exception {
         Map<String, String> byName = new HashMap<>();
@@ -192,25 +235,17 @@ public class CalendarMirror {
         return byName;
     }
 
-    private static java.util.Optional<Integer> parseColour(String colour) {
+    private static Optional<Integer> parseColour(String colour) {
         if (colour == null || ! colour.startsWith("#") || colour.length() != 7)
-            return java.util.Optional.empty();
+            return Optional.empty();
         try {
-            return java.util.Optional.of(0xff000000 | Integer.parseInt(colour.substring(1), 16));
+            return Optional.of(0xff000000 | Integer.parseInt(colour.substring(1), 16));
         } catch (NumberFormatException e) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
     }
 
-    /**
-     * Writes only count as sync-adapter writes with these parameters, and only those may
-     * set _SYNC_ID or clear the dirty flag without marking the row dirty again.
-     */
     private Uri asSyncAdapter(Uri uri) {
-        return uri.buildUpon()
-                .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
-                .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, account.name)
-                .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, account.type)
-                .build();
+        return ProviderUris.asSyncAdapter(uri, account);
     }
 }

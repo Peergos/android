@@ -7,7 +7,8 @@ import android.os.IBinder;
 /** Publishes {@link CalendarSyncAdapter} to the sync framework. */
 public class CalendarSyncService extends Service {
 
-    private static CalendarSyncAdapter adapter;
+    // written under the lock in onCreate, read from the binder thread in onBind
+    private static volatile CalendarSyncAdapter adapter;
     private static final Object lock = new Object();
 
     @Override
