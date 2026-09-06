@@ -26,7 +26,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 renames and drops what it can, which is also what Play measures as
+            // "app optimisation". Most of Peergos.jar is a fat server build whose
+            // libraries nothing on Android reaches, so this is mainly a large deletion.
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
