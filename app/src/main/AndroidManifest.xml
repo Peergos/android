@@ -69,9 +69,20 @@
         <!-- Registers the Peergos account type, which is what makes the calendar toggle
              appear under Settings > Accounts. It issues no tokens: the sync adapter takes
              its session from the app's stored MountConfig. -->
+        <!--
+             Exported because of package visibility. The contacts app has no query for this
+             package, so from Android 11 it can only see us through a component it can
+             resolve, and the account authenticator is that component. Unexported, the
+             authenticator is filtered out of the list the app builds its account types
+             from, it never looks for our contacts.xml at all, and the account is left out
+             of the accounts a new contact can be saved to. Other CardDAV clients export
+             theirs for the same reason. Binding it still gets an authenticator that issues
+             no tokens.
+        -->
         <service
             android:name=".sync.PeergosAuthenticatorService"
-            android:exported="false">
+            android:exported="true"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.accounts.AccountAuthenticator" />
             </intent-filter>
