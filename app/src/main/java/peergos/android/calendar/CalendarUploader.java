@@ -115,7 +115,7 @@ public class CalendarUploader {
     private boolean create(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
         write(directory, uid + CalendarStore.ICS_SUFFIX,
-                withReminder(ICalWriter.create(uid, properties(row)), row), row.id);
+                withReminder(ICalWriter.create(uid, ours(row)), row), row.id);
         return true;
     }
 
@@ -125,7 +125,7 @@ public class CalendarUploader {
             // Removed in Peergos while we were editing. Writing it back under the same name
             // resurrects the user's version rather than dropping their edit.
             write(directory, row.syncId,
-                    withReminder(ICalWriter.create(uidFor(row), properties(row)), row), row.id);
+                    withReminder(ICalWriter.create(uidFor(row), ours(row)), row), row.id);
             return true;
         }
         if (! remote.get().etag().equals(row.etag)) {
@@ -142,7 +142,7 @@ public class CalendarUploader {
     /** Writes the local version as a new event, leaving the remote one alone. */
     private void duplicate(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
-        List<ICalWriter.Line> properties = properties(row);
+        List<ICalWriter.Line> properties = ours(row);
         properties.add(ICalWriter.text("SUMMARY", row.title + " (edited on this device)"));
         store.putObject(directory, uid + CalendarStore.ICS_SUFFIX,
                 withReminder(ICalWriter.create(uid, properties), row).getBytes(StandardCharsets.UTF_8),
@@ -194,6 +194,15 @@ public class CalendarUploader {
         return row.syncId != null && row.syncId.endsWith(CalendarStore.ICS_SUFFIX)
                 ? row.syncId.substring(0, row.syncId.length() - CalendarStore.ICS_SUFFIX.length())
                 : UUID.randomUUID().toString();
+    }
+
+    /** Properties for an event this device is creating, which is one this account owns.
+     *  The web calendar records the same thing, and the one it replaces will not let anyone
+     *  edit an entry that names nobody. An update leaves whatever owner the file already has. */
+    private List<ICalWriter.Line> ours(Row row) {
+        List<ICalWriter.Line> lines = properties(row);
+        lines.add(ICalWriter.text("X-OWNER", account.name));
+        return lines;
     }
 
     /**
