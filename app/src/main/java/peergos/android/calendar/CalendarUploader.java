@@ -114,7 +114,8 @@ public class CalendarUploader {
 
     private boolean create(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
-        write(directory, uid + CalendarStore.ICS_SUFFIX, ICalWriter.create(uid, properties(row)), row.id);
+        write(directory, uid + CalendarStore.ICS_SUFFIX,
+                withReminder(ICalWriter.create(uid, ours(row)), row), row.id);
         return true;
     }
 
@@ -123,27 +124,56 @@ public class CalendarUploader {
         if (remote.isEmpty()) {
             // Removed in Peergos while we were editing. Writing it back under the same name
             // resurrects the user's version rather than dropping their edit.
-            write(directory, row.syncId, ICalWriter.create(uidFor(row), properties(row)), row.id);
+            write(directory, row.syncId,
+                    withReminder(ICalWriter.create(uidFor(row), ours(row)), row), row.id);
             return true;
         }
-        String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
         if (! remote.get().etag().equals(row.etag)) {
             duplicate(row, directory);
             purge(row.id);
             return true;
         }
-        write(directory, row.syncId, ICalWriter.patch(existing, properties(row), Collections.emptyList()), row.id);
+        String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
+        String patched = ICalWriter.patch(existing, properties(row), Collections.emptyList());
+        write(directory, row.syncId, withReminder(patched, row), row.id);
         return true;
     }
 
     /** Writes the local version as a new event, leaving the remote one alone. */
     private void duplicate(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
-        List<ICalWriter.Line> properties = properties(row);
+        List<ICalWriter.Line> properties = ours(row);
         properties.add(ICalWriter.text("SUMMARY", row.title + " (edited on this device)"));
         store.putObject(directory, uid + CalendarStore.ICS_SUFFIX,
-                ICalWriter.create(uid, properties).getBytes(StandardCharsets.UTF_8), Optional.empty());
+                withReminder(ICalWriter.create(uid, properties), row).getBytes(StandardCharsets.UTF_8),
+                Optional.empty());
         Log.i(TAG, "Kept a conflicting local edit as " + uid);
+    }
+
+    /**
+     * The reminder as the phone now has it. Without this a reminder added or cleared in
+     * the platform calendar would never reach the file, and the next download pass — which
+     * writes the Reminders row from the file — would quietly undo it.
+     */
+    private String withReminder(String ics, Row row) throws Exception {
+        return ICalWriter.withReminder(ics, reminderOf(row.id), row.title);
+    }
+
+    /** The earliest alarm the phone would ring for this event, in minutes before the start. */
+    private Optional<Integer> reminderOf(long rowId) throws Exception {
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
+                new String[]{CalendarContract.Reminders.MINUTES},
+                CalendarContract.Reminders.EVENT_ID + "=?",
+                new String[]{Long.toString(rowId)},
+                CalendarContract.Reminders.MINUTES + " DESC")) {
+            while (cursor != null && cursor.moveToNext()) {
+                // A negative value is the provider's "use the calendar's default", which
+                // names no time of its own to write down.
+                if (! cursor.isNull(0) && cursor.getInt(0) >= 0)
+                    return Optional.of(cursor.getInt(0));
+            }
+        }
+        return Optional.empty();
     }
 
     private void write(String directory, String name, String ics, long rowId) throws Exception {
@@ -164,6 +194,15 @@ public class CalendarUploader {
         return row.syncId != null && row.syncId.endsWith(CalendarStore.ICS_SUFFIX)
                 ? row.syncId.substring(0, row.syncId.length() - CalendarStore.ICS_SUFFIX.length())
                 : UUID.randomUUID().toString();
+    }
+
+    /** Properties for an event this device is creating, which is one this account owns.
+     *  The web calendar records the same thing, and the one it replaces will not let anyone
+     *  edit an entry that names nobody. An update leaves whatever owner the file already has. */
+    private List<ICalWriter.Line> ours(Row row) {
+        List<ICalWriter.Line> lines = properties(row);
+        lines.add(ICalWriter.text("X-OWNER", account.name));
+        return lines;
     }
 
     /**
@@ -223,11 +262,7 @@ public class CalendarUploader {
     }
 
     private Uri asSyncAdapter(Uri uri) {
-        return uri.buildUpon()
-                .appendQueryParameter(CalendarContract.CALLER_IS_SYNCADAPTER, "true")
-                .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_NAME, account.name)
-                .appendQueryParameter(CalendarContract.Calendars.ACCOUNT_TYPE, account.type)
-                .build();
+        return ProviderUris.asSyncAdapter(uri, account);
     }
 
     private static final class Row {
