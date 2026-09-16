@@ -121,24 +121,25 @@ public class CalendarSyncTest {
      */
     @Test
     public void skipsTasks() {
-        assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+        assertTrue(EventTranslator.translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
                 + "UID:milk\r\nSUMMARY:Buy milk\r\nDTSTART:20240315T090000Z\r\nDUE:20240315T170000Z\r\n"
                 + "END:VTODO\r\nEND:VCALENDAR\r\n", 1).isEmpty());
-        assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
+        assertTrue(EventTranslator.translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\n"
                 + "UID:someday\r\nSUMMARY:Someday\r\nEND:VTODO\r\nEND:VCALENDAR\r\n", 1).isEmpty());
     }
 
     @Test
     public void skipsAnObjectWithNoStart() {
-        assertTrue(EventTranslator.toEvent("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+        assertTrue(EventTranslator.translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
                 + "UID:nostart\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n", 1).isEmpty());
-        assertTrue(EventTranslator.toEvent("not a calendar at all", 1).isEmpty());
+        assertTrue(EventTranslator.translate("not a calendar at all", 1).isEmpty());
     }
 
     private static ContentValues translate(String ics) {
-        Optional<ContentValues> values = EventTranslator.toEvent(ics, 42);
-        assertTrue("should have produced a row", values.isPresent());
-        assertEquals(Long.valueOf(42), values.get().getAsLong(CalendarContract.Events.CALENDAR_ID));
-        return values.get();
+        Optional<EventTranslator.Translation> translated = EventTranslator.translate(ics, 42);
+        assertTrue("should have produced a row", translated.isPresent());
+        ContentValues values = translated.get().values();
+        assertEquals(Long.valueOf(42), values.getAsLong(CalendarContract.Events.CALENDAR_ID));
+        return values;
     }
 }

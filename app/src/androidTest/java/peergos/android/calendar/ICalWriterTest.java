@@ -116,11 +116,12 @@ public class ICalWriterTest {
                 List.of(ICalWriter.text("SUMMARY", "Round trip"),
                         ICalWriter.timestamp("DTSTART", 1710493200000L),
                         ICalWriter.timestamp("DTEND", 1710496800000L)));
-        var values = EventTranslator.toEvent(ics, 7);
-        assertTrue(values.isPresent());
-        assertEquals("Round trip", values.get().getAsString(
+        var translated = EventTranslator.translate(ics, 7);
+        assertTrue(translated.isPresent());
+        var values = translated.get().values();
+        assertEquals("Round trip", values.getAsString(
                 android.provider.CalendarContract.Events.TITLE));
-        assertEquals(Long.valueOf(1710493200000L), values.get().getAsLong(
+        assertEquals(Long.valueOf(1710493200000L), values.getAsLong(
                 android.provider.CalendarContract.Events.DTSTART));
     }
 
