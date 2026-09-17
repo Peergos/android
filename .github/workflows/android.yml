@@ -92,7 +92,9 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-${{ matrix.api-level }}
+          # the emulator and system image are part of what the snapshot holds, so a runner
+          # image upgrade must not reuse one saved by the previous emulator
+          key: avd-${{ matrix.api-level }}-${{ matrix.api-level == 30 && 'google_apis' || 'default' }}-v2
 
       - name: Create AVD and generate snapshot for caching
         if: steps.avd-cache.outputs.cache-hit != 'true'
@@ -114,9 +116,16 @@ jobs:
           arch: x86_64
           target: ${{ matrix.api-level == 30 && 'google_apis' || 'default' }}
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 8192
+          # Cold boot, rather than loading the cached snapshot. Restoring one brings back
+          # sys.boot_completed=1 immediately, so the runner calls the emulator booted while
+          # system_server is still publishing services - and its own unlock step then fails with
+          # "No service published for: input" before our script gets to run. The cache still saves
+          # the AVD creation; only the fast boot is given up.
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 8192
           disable-animations: true
           script: |
+            # boot_completed can still lead the services the tests need
+            timeout 180 adb shell 'while ! service check package | grep -q found; do sleep 2; done'
             adb logcat -c
             adb logcat -v threadtime > logcat.txt &
             LOGCAT_PID=$!
