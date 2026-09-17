@@ -58,6 +58,26 @@ public class AndroidPoster implements HttpPoster {
         return post(url, payload, unzip, Collections.emptyMap(), timeoutMillis);
     }
 
+    /** The failure with its status code in the message, which a 404 otherwise loses:
+     *  HttpURLConnection reports one as a FileNotFoundException naming only the url, and
+     *  Exceptions.isUnimplemented reads that message to decide whether to fall back to the
+     *  older call. The status goes in the message rather than into a wrapper around the
+     *  original, because what reads one of these reports the cause whenever there is one.
+     */
+    private static IOException withStatus(HttpURLConnection conn, String url, IOException failure) {
+        try {
+            int status = conn.getResponseCode();
+            if (status <= 0)
+                return failure;
+            String reason = conn.getResponseMessage();
+            return new IOException("HTTP " + status
+                    + (reason == null || reason.isEmpty() ? "" : ": " + reason)
+                    + " retrieving " + url);
+        } catch (IOException noStatus) {
+            return failure;
+        }
+    }
+
     private CompletableFuture<byte[]> post(String url, byte[] payload, boolean unzip, Map<String, String> headers, int timeoutMillis) {
         HttpURLConnection conn = null;
         CompletableFuture<byte[]> res = new CompletableFuture<>();
@@ -95,7 +115,9 @@ public class AndroidPoster implements HttpPoster {
                     System.err.println("Trailer:" + trailer);
                 else
                     System.err.println(e.getMessage() + " retrieving " + url);
-                res.completeExceptionally(trailer == null ? e : new RuntimeException(trailer));
+                res.completeExceptionally(trailer == null ?
+                        withStatus(conn, url, e) :
+                        new RuntimeException(trailer));
             } else
                 res.completeExceptionally(e);
         } finally {
@@ -208,7 +230,7 @@ public class AndroidPoster implements HttpPoster {
                     try {
                         throw new IllegalStateException(URLDecoder.decode(trailer, "UTF-8"));
                     } catch (UnsupportedEncodingException f) {}
-                throw new RuntimeException(e);
+                throw new RuntimeException(withStatus(conn, url, e));
             } finally {
                 if (conn != null)
                     conn.disconnect();
