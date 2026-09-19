@@ -483,6 +483,15 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
          *  out chunk by chunk as they arrive instead of being staged on disk first. */
         private final StreamingWriteBuffer stream;
         private final List<byte[]> chunkHashes = new ArrayList<>();
+        /** This upload creates the file, so it is the one place that picks a chunk size. */
+        private final int chunkSize = FileProperties.chunkSizeForNewFiles();
+        /**
+         * A one chunk file stores its root hash rather than a chaining value, and a stream does
+         * not know it has only one chunk until it ends. Both values for chunk 0 are computed
+         * while its bytes are in hand and the right one is kept once the stream ends, rather
+         * than holding the bytes back to decide later.
+         */
+        private byte[] firstChunkAsOnlyChunk;
         private RandomAccessFile raf;
         private Future<?> uploadTask;
         private String mimeType;
@@ -667,12 +676,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                                 Math.min(data.length, MimeTypes.HEADER_BYTES_TO_IDENTIFY_MIME_TYPE)), name);
                         // The whole file is in hand only while it fits in one chunk; anything
                         // bigger gets its thumbnail read back from Peergos afterwards.
-                        if (chunkLen < Chunk.MAX_SIZE) thumbnail = thumbnailFrom(data, mimeType);
+                        if (chunkLen < chunkSize) thumbnail = thumbnailFrom(data, mimeType);
+                        firstChunkAsOnlyChunk = HashTree.chunkHash(data, 0, chunkSize, true, hasher).join();
                     }
-                    chunkHashes.add(hasher.sha256(data).join());
+                    chunkHashes.add(HashTree.chunkHash(data, i, chunkSize, false, hasher).join());
 
                     Pair<byte[], Optional<Bat>> here = FileProperties.calculateMapKey(streamSecret,
-                            cap.getMapKey(), cap.bat, (long) i * Chunk.MAX_SIZE, hasher).join();
+                            cap.getMapKey(), cap.bat, (long) i * chunkSize, chunkSize, hasher).join();
                     Pair<byte[], Optional<Bat>> next = FileProperties.calculateNextMapKey(streamSecret,
                             here.left, here.right, hasher).join();
                     // Chunk 0 replaces the placeholder's node, so its upload has to claim the
@@ -688,14 +698,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
                     long end = uploaded + chunkLen;
                     FileProperties props = new FileProperties(name, false, false, mimeType, end,
-                            now, now, false, Optional.empty(), Optional.of(streamSecret), Optional.empty());
+                            now, now, false, Optional.empty(), Optional.of(streamSecret), Optional.empty(), chunkSize);
                     s.network.synchronizer.applyComplexUpdate(fw.owner(), signer,
                             (snapshot, committer) -> FileUploader.uploadChunk(snapshot, committer, signer,
                                     props, parentLocation, parentBat, parentParentKey, baseKey, chunk,
                                     nextLocation, next.right, writerLink, mirrorBat, s.crypto.random,
                                     hasher, s.network, handle::onBytes)).join();
                     uploaded = end;
-                    if (chunkLen < Chunk.MAX_SIZE) break;
+                    if (chunkLen < chunkSize) break;
                 }
             } catch (Exception e) {
                 // Wake the writer rather than leaving it blocked on a window nothing will drain.
@@ -708,12 +718,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
          *  the hash tree built from the chunks as they went past. */
         private void finishStreamedUpload(long finalSize) {
             FileWrapper uploaded = lookup();
-            HashTree tree = HashTree.build(chunkHashes, s.crypto.hasher).join();
+            if (chunkHashes.size() == 1 && firstChunkAsOnlyChunk != null)
+                chunkHashes.set(0, firstChunkAsOnlyChunk);
+            HashTree tree = HashTree.build(chunkHashes, chunkSize, s.crypto.hasher).join();
             FileProperties current = uploaded.getFileProperties();
             FileProperties finalProps = new FileProperties(name, false, false,
                     mimeType != null ? mimeType : current.mimeType, finalSize,
                     current.modified, current.created, false, thumbnail,
-                    current.streamSecret, Optional.of(tree.branch(0)));
+                    current.streamSecret, Optional.of(tree.branch(0)), chunkSize);
             uploaded.setSameNameProperties(finalProps, s.network).join();
 
             if (thumbnail.isEmpty() && wantsThumbnail(mimeType)) {
@@ -749,7 +761,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             FileProperties current = uploaded.getFileProperties();
             uploaded.setSameNameProperties(new FileProperties(current.name, false, current.isLink,
                     current.mimeType, current.size, current.modified, current.created,
-                    current.isHidden, thumb, current.streamSecret, current.treeHash), s.network).join();
+                    current.isHidden, thumb, current.streamSecret, current.treeHash,
+                    current.chunkSize), s.network).join();
         }
 
         /** Overwrite of a file that already existed before this open: keep the existing

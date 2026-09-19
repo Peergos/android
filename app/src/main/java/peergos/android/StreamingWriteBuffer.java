@@ -3,7 +3,7 @@ package peergos.android;
 import java.io.IOException;
 import java.util.Arrays;
 
-import peergos.shared.user.fs.Chunk;
+import peergos.shared.user.fs.FileProperties;
 
 /** Hands a writer's bytes to an uploader one chunk at a time, holding a single chunk in
  *  memory, so a file of any size can be uploaded without ever being stored locally.
@@ -13,7 +13,8 @@ import peergos.shared.user.fs.Chunk;
  *  bytes behind the window have already been uploaded and can no longer be revised. */
 class StreamingWriteBuffer {
 
-    private final byte[] window = new byte[Chunk.MAX_SIZE];
+    /** One chunk of the file being created, which is what paces the writer to the upload. */
+    private final byte[] window = new byte[FileProperties.chunkSizeForNewFiles()];
     /** Absolute offset of window[0]. */
     private long windowStart;
     /** Bytes of the window the writer has filled. */

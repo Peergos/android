@@ -44,6 +44,7 @@ import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.user.fs.AsyncReader;
 import peergos.shared.user.fs.Chunk;
 import peergos.shared.user.fs.FileWrapper;
+import peergos.server.crypto.hash.ScryptJava;
 import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.ResumeUploadProps;
@@ -421,73 +422,16 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         }
     }
 
-    public static List<byte[]> hashChunks(InputStream fin, long size) {
-        List<byte[]> chunkHashes = new ArrayList<>();
-        int chunkOffset = 0;
-        byte[] buf = new byte[64 * 1024];
-        try {
-            MessageDigest chunkHash = MessageDigest.getInstance("SHA-256");
-            for (long i = 0; i < size; ) {
-                int read = fin.read(buf);
-                chunkOffset += read;
-                if (chunkOffset >= Chunk.MAX_SIZE) {
-                    int thisChunk = read - chunkOffset + Chunk.MAX_SIZE;
-                    chunkHash.update(buf, 0, thisChunk);
-                    chunkHashes.add(chunkHash.digest());
-                    chunkHash = MessageDigest.getInstance("SHA-256");
-                    int leftover = read - thisChunk;
-                    if (leftover > 0)
-                        chunkHash.update(buf, thisChunk, leftover);
-                    chunkOffset = leftover;
-                } else
-                    chunkHash.update(buf, 0, read);
-                i += read;
-            }
-            if (size == 0 || size % Chunk.MAX_SIZE != 0)
-                chunkHashes.add(chunkHash.digest());
-            return chunkHashes;
-        } catch (IOException | NoSuchAlgorithmException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public static List<byte[]> parallelHashChunks(Supplier<InputStream> fins, int nThreads, long size) {
-        int nChunks = (int) ((size + Chunk.MAX_SIZE - 1)/ Chunk.MAX_SIZE);
-        long chunksPerThread = (nChunks + nThreads - 1) / nThreads;
-        if (size < Chunk.MAX_SIZE) {
-            try (InputStream fin = fins.get()) {
-                return hashChunks(fin, size);
-            } catch (IOException e) {
-                throw new IllegalStateException(e);
-            }
-        }
-        return IntStream.range(0, nThreads)
-                .parallel()
-                .mapToObj(i -> {
-                    try (InputStream fin = fins.get()) {
-                        long start = i * chunksPerThread * Chunk.MAX_SIZE;
-                        long end = Math.min(size, (i + 1) * chunksPerThread * Chunk.MAX_SIZE);
-                        if (start == end || start > size)
-                            return Collections.<byte[]>emptyList();
-                        long skipped = fin.skip(start);
-                        if (skipped != start)
-                            throw new IllegalStateException("Skip did not complete!");
-                        return hashChunks(fin, end - start);
-                    } catch (IOException e) {
-                        throw new IllegalStateException(e);
-                    }
-                })
-                .flatMap(List::stream)
-                .collect(Collectors.toList());
-    }
-
     @Override
-    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState, long fileSize) {
+    public HashTree hashFile(Path p, Optional<FileWrapper> meta, String relPath, SyncState syncState, long fileSize, int chunkSize) {
         DocumentFile f = getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p));
         long size = f.length();
         int nCPUs = Runtime.getRuntime().availableProcessors();
 
-        List<byte[]> chunkHashes = parallelHashChunks(() -> {
+        // The hashing itself is shared with the server: only the way the bytes are opened is
+        // android's, which is what the InputStream supplier is for. This used to be a copy of
+        // ScryptJava's, which is exactly how a second chunk arithmetic gets to drift.
+        List<byte[]> chunkHashes = ScryptJava.parallelHashChunks(() -> {
             try {
                 ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(f.getUri(), "r");
                 // Ties the fd's lifetime to the stream: leaving the pfd to its finalizer can
@@ -496,8 +440,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             } catch (FileNotFoundException e) {
                 throw new RuntimeException(e);
             }
-        }, nCPUs, size);
-        return HashTree.build(chunkHashes, crypto.hasher).join();
+        }, nCPUs, size, chunkSize, crypto.hasher);
+        return HashTree.build(chunkHashes, chunkSize, crypto.hasher).join();
     }
 
     @Override
