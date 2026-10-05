@@ -11,7 +11,6 @@ import androidx.core.app.NotificationCompat;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Long-running foreground service that drains the configured sync pairs to completion.
@@ -20,7 +19,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * on launch and from the add-pair / sync-now JS bridges.
  */
 public class SyncService extends Service {
-    private static final AtomicBoolean running = new AtomicBoolean(false);
+    /** Guards the two below: whether a pass is running, and the latest start, which the pass
+     *  stops the service with when it ends. */
+    private static final Object starts = new Object();
+    private static boolean running;
+    private static int latestStart;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -31,21 +34,26 @@ public class SyncService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForeground(MainActivity.SYNC_NOTIFICATION_ID, buildNotification(),
                 FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        // SyncWorker.lock would already serialise this, but guarding here lets us
-        // stopSelf the redundant start immediately rather than parking a thread.
-        if (!running.compareAndSet(false, true)) {
-            stopSelf(startId);
-            return START_NOT_STICKY;
+        synchronized (starts) {
+            latestStart = startId;
+            // A start while a pass runs is covered by that pass. Stopping here would stop the
+            // service the pass runs in - stopSelf with the newest start id stops it outright -
+            // and leave the pass uploading on in a process Android counts as idle.
+            if (running)
+                return START_NOT_STICKY;
+            running = true;
         }
-        final int id = startId;
         new Thread(() -> {
             try {
                 Path peergosDir = Paths.get(getFilesDir().getAbsolutePath());
                 SyncWorker.runSyncOnce(getApplicationContext(), peergosDir);
             } finally {
-                running.set(false);
-                stopForeground(STOP_FOREGROUND_REMOVE);
-                stopSelf(id);
+                synchronized (starts) {
+                    running = false;
+                    stopForeground(STOP_FOREGROUND_REMOVE);
+                    // the latest start, so one Android has not handed over yet keeps the service
+                    stopSelf(latestStart);
+                }
             }
         }, "SyncService").start();
         return START_NOT_STICKY;
