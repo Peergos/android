@@ -100,9 +100,16 @@ public class SyncWorker extends Worker {
     @Override
     public Result doWork() {
         Path peergosDir = Paths.get(getInputData().getString(PEERGOS_PATH));
+        // A pass can upload for hours, and this work is stopped long before that: by its job's
+        // time limit, or by WorkManager itself the moment a constraint lapses - a few seconds
+        // without network is enough. The pass then goes on in a process Android counts as idle,
+        // which it freezes or kills for its CPU use, losing the file in flight. So the pass goes
+        // to the sync service the app uses when it is open, a foreground service none of that
+        // stops. Where Android refuses to start it from the background, it runs here as before.
+        if (! SyncService.startFromBackground(getApplicationContext()))
+            runSyncOnce(getApplicationContext(), peergosDir);
         // a pass that ends badly queues its own follow-up, which also covers the passes run
         // by the foreground service, so this unit of work is done either way
-        runSyncOnce(getApplicationContext(), peergosDir);
         return Result.success();
     }
 
