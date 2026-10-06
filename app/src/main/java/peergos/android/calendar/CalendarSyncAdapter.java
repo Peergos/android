@@ -50,6 +50,10 @@ public class CalendarSyncAdapter extends AbstractThreadedSyncAdapter {
             syncResult.stats.numAuthExceptions++;
             return;
         }
+        // The session keeps the store's pointers for a few seconds, and a pass that soon after the
+        // last one would mirror the calendar as it was then: a change the page has just made,
+        // and asked for this pass to bring over, would wait for the next periodic sync.
+        context.network.mutable.clearCache();
         try {
             int changes = new CalendarMirror(provider, account, new CalendarStore(context)).sync();
             syncResult.stats.numEntries += changes;
