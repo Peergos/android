@@ -1,5 +1,6 @@
 package peergos.android;
 
+import peergos.android.sync.PeergosAccount;
 import peergos.android.sync.SyncPermission;
 
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions;
@@ -240,6 +241,14 @@ public class MainActivity extends AppCompatActivity {
     @JavascriptInterface
     public void notifyDirectoryRequest() {
         wantsDirectory = true;
+    }
+
+    /** The page's calendar saved or deleted something. Mirroring it into the device's calendar
+     *  now is what lets the reminder of an event starting soon go off: left to the periodic
+     *  sync, the event can arrive half an hour later, after its reminder was due. */
+    @JavascriptInterface
+    public void calendarChanged() {
+        PeergosAccount.requestCalendarSync(getApplicationContext());
     }
 
     /** Launch the system Files app rooted at the Peergos SAF DocumentsProvider so the

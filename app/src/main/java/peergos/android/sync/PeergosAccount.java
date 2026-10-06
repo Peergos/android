@@ -5,6 +5,7 @@ import android.accounts.AccountManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.os.Bundle;
+import android.provider.CalendarContract;
 
 import java.util.Optional;
 
@@ -77,6 +78,13 @@ public final class PeergosAccount {
             ContentResolver.setSyncAutomatically(account, authority, false);
             ContentResolver.cancelSync(account, authority);
         }
+    }
+
+    /** Mirrors the calendar into the device's now, where the account syncs it at all. */
+    public static void requestCalendarSync(Context context) {
+        existing(context)
+                .filter(account -> ContentResolver.getSyncAutomatically(account, CalendarContract.AUTHORITY))
+                .ifPresent(account -> requestSync(account, CalendarContract.AUTHORITY));
     }
 
     /** Ask for a sync now, e.g. after the user changes something in the web UI. */
