@@ -956,17 +956,22 @@ public class MainActivity extends AppCompatActivity {
 
     /** The sync adapter runs in this process, so its writes to the calendar provider need the
      *  permission granted to the app, not just declared in the manifest. Asked for once per
-     *  visit rather than on every mount, so a user who says no is not asked again and again. */
+     *  visit rather than on every mount, so a user who says no is not asked again and again.
+     *  Notifications are asked for here too, as this is when they start to matter: the app
+     *  rings the reminders of the events it mirrors. */
     private void requestCalendarPermission() {
         if (askedForCalendar)
             return;
-        if (ActivityCompat.checkSelfPermission(getApplicationContext(),
-                android.Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED)
+        List<String> wanted = new ArrayList<>(List.of(android.Manifest.permission.READ_CALENDAR,
+                android.Manifest.permission.WRITE_CALENDAR));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            wanted.add(android.Manifest.permission.POST_NOTIFICATIONS);
+        wanted.removeIf(permission -> ActivityCompat.checkSelfPermission(getApplicationContext(),
+                permission) == PackageManager.PERMISSION_GRANTED);
+        if (wanted.isEmpty())
             return;
         askedForCalendar = true;
-        runOnUiThread(() -> ActivityCompat.requestPermissions(this, new String[]{
-                android.Manifest.permission.READ_CALENDAR,
-                android.Manifest.permission.WRITE_CALENDAR}, 2));
+        runOnUiThread(() -> ActivityCompat.requestPermissions(this, wanted.toArray(new String[0]), 2));
     }
 
     /** As for the calendar, and separately from it: a user who syncs contacts alone should

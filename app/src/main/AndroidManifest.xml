@@ -100,6 +100,18 @@
                 android:name="android.content.SyncAdapter"
                 android:resource="@xml/calendar_syncadapter" />
         </service>
+        <!-- The calendar provider sends this when a reminder in it is due, to every app that
+             listens, which is how a calendar app rings its reminders. Exported, since the
+             provider is another app; anyone else sending it only has the receiver look for
+             reminders that are due. -->
+        <receiver
+            android:name=".calendar.ReminderReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.EVENT_REMINDER" />
+                <data android:scheme="content" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".contacts.ContactsSyncService"
             android:exported="false">
