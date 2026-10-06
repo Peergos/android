@@ -110,13 +110,21 @@ public class SyncService extends Service {
         foregroundSpent = false;
     }
 
+    /** The channel the notification was on before, which sounded. Android keeps the importance a
+     *  channel was created with, so the quiet one is a new channel and this one goes. */
+    private static final String OLD_CHANNEL_ID = "sync-updates";
+
     /** The channel is created here as well as by the activity, since a sync started in the
-     *  background can be the first thing the process does. */
+     *  background can be the first thing the process does. Low importance, as for any
+     *  transfer in the background: in the shade while it runs, but no sound, since every
+     *  scheduled sync posts it again. */
     static void createChannel(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        manager.deleteNotificationChannel(OLD_CHANNEL_ID);
         NotificationChannel channel = new NotificationChannel(MainActivity.SYNC_CHANNEL_ID, "Sync",
-                NotificationManager.IMPORTANCE_DEFAULT);
-        channel.setDescription("Sync updates");
-        context.getSystemService(NotificationManager.class).createNotificationChannel(channel);
+                NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("While folders are syncing");
+        manager.createNotificationChannel(channel);
     }
 
     static Notification notification(Context context) {

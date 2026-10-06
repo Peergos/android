@@ -171,7 +171,7 @@ public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
     public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
-    public static final String SYNC_CHANNEL_ID = "sync-updates";
+    public static final String SYNC_CHANNEL_ID = "sync-progress";
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
     WebView webView, cardDetails;
