@@ -136,6 +136,46 @@ public class ReminderReceiverTest {
     }
 
     @Test
+    public void anAlertTheProviderWritesAgainDoesNotRingAgain() {
+        Account account = syncing(PeergosAccount.ensure(context(), USER));
+        long now = System.currentTimeMillis();
+        long first = dueAlert(calendar(account.name, account.type), OURS, now);
+        ReminderReceiver.ringDue(context());
+        assertEquals(1, posted(OURS));
+
+        // the provider rewrites an event's alerts as it reschedules, under new row ids
+        long event = eventOf(first);
+        context().getContentResolver().delete(
+                ContentUris.withAppendedId(CalendarContract.CalendarAlerts.CONTENT_URI, first), null, null);
+        alertFor(event, now, null);
+        context().getSystemService(NotificationManager.class).cancelAll();
+        ReminderReceiver.ringDue(context());
+
+        assertEquals("the same reminder of the same event rings once", 0, postedAfterAWhile(OURS));
+    }
+
+    @Test
+    public void anotherEventsReminderUnderAReusedRowIdStillRings() {
+        Account account = syncing(PeergosAccount.ensure(context(), USER));
+        long calendar = calendar(account.name, account.type);
+        long now = System.currentTimeMillis();
+        long rowId = dueAlert(calendar, THEIRS, now);
+        ReminderReceiver.ringDue(context());
+        assertEquals(1, posted(THEIRS));
+
+        // that event goes, and its alert row's id comes back for another event's reminder
+        context().getContentResolver().delete(
+                ContentUris.withAppendedId(CalendarContract.CalendarAlerts.CONTENT_URI, rowId), null, null);
+        long other = dueAlert(calendar, OURS, now);
+        context().getContentResolver().delete(
+                ContentUris.withAppendedId(CalendarContract.CalendarAlerts.CONTENT_URI, other), null, null);
+        alertFor(eventTitled(OURS), now, rowId);
+        ReminderReceiver.ringDue(context());
+
+        assertEquals("a new event's reminder rings, whatever row id it was given", 1, posted(OURS));
+    }
+
+    @Test
     public void withTheCalendarSyncOffNothingRings() {
         // the mirrored calendars stay on the phone when the sync is turned off, no longer kept
         // up to date, and a reminder from them could be for an event that has since moved
@@ -194,7 +234,16 @@ public class ReminderReceiverTest {
         event.put(CalendarContract.Events.DTEND, alarmTime + 60 * 60_000);
         event.put(CalendarContract.Events.EVENT_TIMEZONE, "UTC");
         long eventId = ContentUris.parseId(resolver.insert(CalendarContract.Events.CONTENT_URI, event));
+        return alertFor(eventId, alarmTime, null);
+    }
+
+    /** The provider's alert row for an event starting at `alarmTime`, under `rowId` if given, as
+     *  the provider writes one for a reminder at the time of the event. */
+    private long alertFor(long eventId, long alarmTime, Long rowId) {
+        ContentResolver resolver = context().getContentResolver();
         ContentValues alert = new ContentValues();
+        if (rowId != null)
+            alert.put(CalendarContract.CalendarAlerts._ID, rowId);
         alert.put(CalendarContract.CalendarAlerts.EVENT_ID, eventId);
         alert.put(CalendarContract.CalendarAlerts.BEGIN, alarmTime);
         alert.put(CalendarContract.CalendarAlerts.END, alarmTime + 60 * 60_000);
@@ -205,6 +254,25 @@ public class ReminderReceiverTest {
         alert.put(CalendarContract.CalendarAlerts.STATE, CalendarContract.CalendarAlerts.STATE_SCHEDULED);
         alert.put(CalendarContract.CalendarAlerts.MINUTES, 0);
         return ContentUris.parseId(resolver.insert(CalendarContract.CalendarAlerts.CONTENT_URI, alert));
+    }
+
+    private long eventOf(long alertId) {
+        try (Cursor cursor = context().getContentResolver().query(
+                ContentUris.withAppendedId(CalendarContract.CalendarAlerts.CONTENT_URI, alertId),
+                new String[]{CalendarContract.CalendarAlerts.EVENT_ID}, null, null, null)) {
+            assertTrue("the alert should be there", cursor != null && cursor.moveToFirst());
+            return cursor.getLong(0);
+        }
+    }
+
+    /** The newest event titled `title`. */
+    private long eventTitled(String title) {
+        try (Cursor cursor = context().getContentResolver().query(CalendarContract.Events.CONTENT_URI,
+                new String[]{CalendarContract.Events._ID}, CalendarContract.Events.TITLE + "=?",
+                new String[]{title}, CalendarContract.Events._ID + " DESC")) {
+            assertTrue("the event should be there", cursor != null && cursor.moveToFirst());
+            return cursor.getLong(0);
+        }
     }
 
     private int state(long alertId) {

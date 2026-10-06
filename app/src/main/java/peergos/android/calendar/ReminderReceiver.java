@@ -27,6 +27,7 @@ import java.util.Collections;
 import java.util.Formatter;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -46,9 +47,11 @@ public class ReminderReceiver extends BroadcastReceiver {
 
     private static final String TAG = "PeergosCalendar";
     static final String CHANNEL_ID = "calendar-reminders";
-    /** Which reminders this app has rung, as "alert id@alarm time". The provider's own record,
-     *  the alert's state, belongs to the calendar apps: one of them that finds an alert already
-     *  marked fired posts it without a sound, so writing it would silence theirs. */
+    /** Which reminders this app has rung, as "event@start@alarm time". The provider's own
+     *  record, the alert's state, belongs to the calendar apps: one of them that finds an alert
+     *  already marked fired posts it without a sound, so writing it would silence theirs. Nor is
+     *  the alert's row id kept, as calendar apps do not keep it either: the provider can delete a
+     *  row and hand its id to the next one, which may be another event's reminder. */
     static final String RUNG = "peergos-reminders";
     private static final String RUNG_KEY = "rung";
     /** How late a reminder still rings: the provider schedules an alarm up to two hours after
@@ -108,7 +111,7 @@ public class ReminderReceiver extends BroadcastReceiver {
         String[] args = {Integer.toString(CalendarContract.CalendarAlerts.STATE_SCHEDULED),
                 Integer.toString(CalendarContract.CalendarAlerts.STATE_FIRED),
                 Long.toString(now), Long.toString(now - LATE_MS)};
-        String[] projection = {CalendarContract.CalendarAlerts._ID, CalendarContract.CalendarAlerts.ALARM_TIME,
+        String[] projection = {CalendarContract.CalendarAlerts.EVENT_ID, CalendarContract.CalendarAlerts.ALARM_TIME,
                 CalendarContract.CalendarAlerts.TITLE, CalendarContract.CalendarAlerts.BEGIN,
                 CalendarContract.CalendarAlerts.END, CalendarContract.CalendarAlerts.ALL_DAY,
                 CalendarContract.CalendarAlerts.EVENT_LOCATION};
@@ -116,18 +119,20 @@ public class ReminderReceiver extends BroadcastReceiver {
         boolean firstRun = ! prefs.contains(RUNG_KEY);
         Set<String> rung = new HashSet<>(prefs.getStringSet(RUNG_KEY, Collections.emptySet()));
         // past the point a reminder still rings, it cannot come round again
-        rung.removeIf(key -> Long.parseLong(key.substring(key.indexOf('@') + 1)) <= now - LATE_MS);
+        rung.removeIf(key -> Long.parseLong(key.substring(key.lastIndexOf('@') + 1)) <= now - LATE_MS);
         try (Cursor cursor = resolver.query(CalendarContract.CalendarAlerts.CONTENT_URI, projection,
                 selection, args, CalendarContract.CalendarAlerts.BEGIN)) {
             while (cursor != null && cursor.moveToNext()) {
-                long id = cursor.getLong(0);
+                long event = cursor.getLong(0);
                 long alarmTime = cursor.getLong(1);
-                if (! rung.add(id + "@" + alarmTime))
+                long begin = cursor.getLong(3);
+                if (! rung.add(event + "@" + begin + "@" + alarmTime))
                     continue;
                 if (firstRun && alarmTime < now - JUST_DUE_MS)
                     continue;
-                manager.notify(CHANNEL_ID, (int) id, notification(context, cursor.getString(2),
-                        cursor.getLong(3), cursor.getLong(4), cursor.getInt(5) != 0, cursor.getString(6)));
+                // one notification per occurrence: a second reminder for it replaces the first
+                manager.notify(CHANNEL_ID, Objects.hash(event, begin), notification(context,
+                        cursor.getString(2), begin, cursor.getLong(4), cursor.getInt(5) != 0, cursor.getString(6)));
             }
         }
         prefs.edit().putStringSet(RUNG_KEY, rung).apply();
@@ -168,7 +173,6 @@ public class ReminderReceiver extends BroadcastReceiver {
                 .setContentText(text)
                 .setCategory(NotificationCompat.CATEGORY_EVENT)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setOnlyAlertOnce(true)
                 .setAutoCancel(true);
         if (open != null)
             builder.setContentIntent(PendingIntent.getActivity(context, 0, open,
