@@ -8,6 +8,9 @@ import android.os.Bundle;
 import android.provider.CalendarContract;
 
 import java.util.Optional;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The system account the sync adapters hang off.
@@ -60,11 +63,40 @@ public final class PeergosAccount {
     public static void startSyncing(Account account, String authority) {
         ContentResolver.setIsSyncable(account, authority, 1);
         ContentResolver.setSyncAutomatically(account, authority, true);
+        schedule(account, authority, SCHEDULE_ATTEMPTS);
+    }
+
+    /** How often, and for how long, a periodic sync that has not taken is asked for again. */
+    private static final long SCHEDULE_RETRY_MS = 500;
+    private static final int SCHEDULE_ATTEMPTS = 60;
+    private static final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "PeergosSyncSchedule");
+        thread.setDaemon(true);
+        return thread;
+    });
+
+    /**
+     * Android's sync manager hears of a new account from a broadcast, a moment after it is
+     * added, and until then drops a periodic sync or a sync request for it, for good, as being
+     * for an account that doesn't exist. Asked for straight after {@link #ensure} added the
+     * account, as it is on signing in, nothing would then sync by itself until the app was next
+     * started. So the periodic sync is asked for again until it is there, and the first pass
+     * only then. Checked off the calling thread, which can be the main one.
+     */
+    private static void schedule(Account account, String authority, int attemptsLeft) {
         // Calendar and contact changes are small and not urgent, so the periodic framework
         // batches these into the system's existing wakeups, which Doze treats far better
         // than a foreground service of our own.
         ContentResolver.addPeriodicSync(account, authority, Bundle.EMPTY, SYNC_INTERVAL_SECONDS);
-        requestSync(account, authority);
+        scheduler.schedule(() -> {
+            // turned off again meanwhile
+            if (! ContentResolver.getSyncAutomatically(account, authority))
+                return;
+            if (! ContentResolver.getPeriodicSyncs(account, authority).isEmpty())
+                requestSync(account, authority);
+            else if (attemptsLeft > 1)
+                schedule(account, authority, attemptsLeft - 1);
+        }, SCHEDULE_RETRY_MS, TimeUnit.MILLISECONDS);
     }
 
     /**

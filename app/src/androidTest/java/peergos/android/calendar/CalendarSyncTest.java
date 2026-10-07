@@ -50,18 +50,42 @@ public class CalendarSyncTest {
         assertEquals(1, ContentResolver.getIsSyncable(account, CalendarContract.AUTHORITY));
         assertTrue("automatic sync should be on",
                 ContentResolver.getSyncAutomatically(account, CalendarContract.AUTHORITY));
-        // The sync manager records this asynchronously, so poll rather than read once.
-        boolean scheduled = false;
-        for (int i = 0; i < 40 && ! scheduled; i++) {
-            scheduled = ! ContentResolver.getPeriodicSyncs(account, CalendarContract.AUTHORITY).isEmpty();
-            if (! scheduled)
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+        assertTrue("a periodic sync should be scheduled", periodicSyncTakes(account));
+    }
+
+    /**
+     * Android's sync manager hears of an account from a broadcast, a moment after it is added,
+     * and until then drops a periodic sync asked for it, for good, as being for an account that
+     * doesn't exist. Turning the calendar on just after signing in is exactly that, and signing
+     * in and out a few times over first leaves the sync manager further behind. Whether it is
+     * behind at the moment the sync is asked for is a matter of timing, so without the retry
+     * in startSyncing this fails only some of the time; with it, it has to pass every time.
+     */
+    @Test
+    public void aPeriodicSyncAskedForAsTheAccountAppearsStillTakes() {
+        Account account = null;
+        for (int i = 0; i < 3; i++) {
+            PeergosAccount.ensure(context(), USER + "-other");
+            account = PeergosAccount.ensure(context(), USER);
         }
-        assertTrue("a periodic sync should be scheduled", scheduled);
+        PeergosAccount.startSyncing(account, CalendarContract.AUTHORITY);
+        assertTrue("a periodic sync should be scheduled", periodicSyncTakes(account));
+    }
+
+    /** The sync manager records a periodic sync asynchronously, so poll rather than read once:
+     *  for as long as startSyncing keeps asking for it. */
+    private static boolean periodicSyncTakes(Account account) {
+        for (int i = 0; i < 300; i++) {
+            if (! ContentResolver.getPeriodicSyncs(account, CalendarContract.AUTHORITY).isEmpty())
+                return true;
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
     }
 
     @Test
