@@ -7,8 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts.RequestMultiple
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
 import android.app.ProgressDialog;
 import android.content.BroadcastReceiver;
 import android.content.ActivityNotFoundException;
@@ -174,7 +172,7 @@ public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
     public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
-    public static final String SYNC_CHANNEL_ID = "sync-updates";
+    public static final String SYNC_CHANNEL_ID = "sync-progress";
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
     WebView webView, cardDetails;
@@ -500,7 +498,7 @@ public class MainActivity extends AppCompatActivity {
         System.out.println("Peergos v1");
         AppLifecycleObserver appLifecycleObserver = new AppLifecycleObserver();
         ProcessLifecycleOwner.get().getLifecycle().addObserver(appLifecycleObserver);
-        createNotificationChannel();
+        SyncService.createChannel(this);
         if (ActivityCompat.checkSelfPermission(getApplicationContext(),
                 android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1003,6 +1001,7 @@ public class MainActivity extends AppCompatActivity {
         });
         maybePromptBatteryOptimization();
         SyncWorker.onScreenCadence.set(true);
+        SyncService.appOnScreen();
         // opening the app should show what is true now, not what was true before it was last
         // put away, so check straight away unless a pass has just run
         scheduleTick(msBeforeNextPass());
@@ -1366,20 +1365,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void createNotificationChannel() {
-        // Create the NotificationChannel, but only on API 26+ because
-        // the NotificationChannel class is not in the Support Library.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            int importance = NotificationManager.IMPORTANCE_DEFAULT;
-            NotificationChannel channel = new NotificationChannel(SYNC_CHANNEL_ID, "Sync", importance);
-            channel.setDescription("Sync updates");
-            // Register the channel with the system; you can't change the importance
-            // or other notification behaviors after this.
-            NotificationManager notificationManager = getSystemService(NotificationManager.class);
-            notificationManager.createNotificationChannel(channel);
-        }
-    }
-    
     public SyncRunner startServer(int port) {
         File privateStorage = this.getFilesDir();
         Path peergosDir = Paths.get(privateStorage.getAbsolutePath());
