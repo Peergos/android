@@ -42,6 +42,15 @@
 -keep class * extends com.google.gson.reflect.TypeToken
 -keep class * extends com.google.common.reflect.TypeToken
 
+# --- VarHandle below API 33 -----------------------------------------------
+# VarHandle is public only from API 33. Below that ART's verifier checks a
+# VarHandle.get against its declared Object[] parameter rather than the call
+# site, so it rejects the whole class holding the call. Netty keeps these calls
+# in classes it loads only once VarHandles are known to work, which they never
+# are here; R8 inlining or moving them into a class the app does load makes the
+# app crash at startup on Android 11 and 12 (issue #38).
+-keep,allowobfuscation,allowshrinking class io.netty.**VarHandle** { *; }
+
 # --- the web UI bridge ----------------------------------------------------
 # MainActivity is handed to the WebView as "Android" and the page calls these
 # methods by name. (The default rules carry this too; it is here because it is
