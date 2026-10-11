@@ -1526,7 +1526,7 @@ public class MainActivity extends AppCompatActivity {
                     PeergosSession.mountHandler());
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
-            List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,code-editor,pdf".split(","));
+            List<String> appSubdomains = Arrays.asList("markup-viewer,calendar,address-book,code-editor,pdf".split(","));
             int connectionBacklog = 50;
             int handlerPoolSize = 4;
             Logging.init(a);
