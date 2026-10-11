@@ -64,6 +64,7 @@ import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -176,6 +177,24 @@ public class MainActivity extends AppCompatActivity {
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
     WebView webView, cardDetails;
+    // From targetSdk 36 predictive back is on and onBackPressed is never called, so back
+    // closed the app. Disabled when there is nowhere to go back to, so the system exits.
+    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(false) {
+        @Override
+        public void handleOnBackPressed() {
+            if (cardDetails != null) {
+                webView.removeView(cardDetails);
+                cardDetails = null;
+            } else if (webView.canGoBack()) {
+                webView.goBack();
+            }
+            updateBackCallback();
+        }
+    };
+
+    void updateBackCallback() {
+        backCallback.setEnabled(cardDetails != null || (webView != null && webView.canGoBack()));
+    }
     YubiKitManager yubiKitManager;
     AlertDialog fido2Dialog;
     volatile int pendingCallbackId = -1;
@@ -550,6 +569,7 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebChromeClient(new UploadHandler());
 
         webView.addJavascriptInterface(this, "Android");
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
 
         ServiceWorkerController swController = ServiceWorkerController.getInstance();
         serviceWorker = new ServiceWorkerClient() {
@@ -630,6 +650,11 @@ public class MainActivity extends AppCompatActivity {
             if (url.startsWith("http://localhost:")) {
                 injectWebAuthnPolyfill();
             }
+        }
+
+        @Override
+        public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+            updateBackCallback();
         }
 
         @Override
@@ -735,6 +760,7 @@ public class MainActivity extends AppCompatActivity {
             WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
             transport.setWebView(cardDetails);
             resultMsg.sendToTarget();
+            updateBackCallback();
 
             WebSettings settings = cardDetails.getSettings();
             settings.setUserAgentString("Peergos-1.0.0-android-payment");
@@ -756,6 +782,7 @@ public class MainActivity extends AppCompatActivity {
                     super.onCloseWindow(window);
                     view.removeView(cardDetails);
                     MainActivity.this.cardDetails = null;
+                    updateBackCallback();
                     view.requestFocus();
                 }
             });
@@ -871,20 +898,6 @@ public class MainActivity extends AppCompatActivity {
     };
 
     DownloadListener downloadListener = (url, userAgent, contentDisposition, wrongMimetype, contentLength) -> downloadFile(Uri.parse(url));
-
-    @Override
-    public void onBackPressed() {
-        if (cardDetails != null) {
-            webView.removeView(cardDetails);
-            cardDetails = null;
-            return;
-        }
-        if(webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
-        }
-    }
 
     /** The desktop runner leaves 30s between passes. Scheduled background work cannot run
      *  more often than every 15 minutes, so while the app is on screen it keeps the desktop's
