@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 import peergos.server.Main;
 import peergos.server.MountProperties;
 import peergos.server.UserService;
+import peergos.server.login.ConfigDeviceTokenStore;
 import peergos.server.mount.MountBackend;
 import peergos.server.net.MountConfigHandler;
 import peergos.server.util.secrets.SecretStore;
@@ -56,7 +57,8 @@ public class PeergosApp extends Application {
                     Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android-mount"));
             Crypto c = cryptoFactory.get();
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, c.hasher);
-            return NetworkAccess.buildViaPeergosInstance(poster, poster, localDht, 7_000, c.hasher, false).join();
+            return NetworkAccess.buildViaPeergosInstance(poster, poster, localDht, 7_000, c.hasher, false,
+                    new ConfigDeviceTokenStore(peergosDir.resolve("config"))).join();
         };
 
         MountProperties props = new MountProperties(persisted, peergosDir, serverUrlStr);

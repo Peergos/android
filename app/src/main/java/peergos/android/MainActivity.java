@@ -124,6 +124,7 @@ import peergos.server.Main;
 import peergos.server.SyncProperties;
 import peergos.server.UserService;
 import peergos.server.corenode.JdbcIpnsAndSocial;
+import peergos.server.login.ConfigDeviceTokenStore;
 import peergos.server.login.JdbcAccount;
 import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.net.SyncConfigHandler;
@@ -1362,7 +1363,8 @@ public class MainActivity extends AppCompatActivity {
     // ---- end WebAuthn bridge ----
 
     public NetworkAccess buildLocalhostNetwork() {
-        return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false);
+        return NetworkAccess.buildToPeergosServer(Collections.emptyList(), core, localDht, poster, poster, 7_000, crypto.hasher, Collections.emptyList(), false,
+                new ConfigDeviceTokenStore(getFilesDir().toPath().resolve("config")));
     }
 
     public static Optional<Thumbnail> generateVideoThumbnail(File f) {
