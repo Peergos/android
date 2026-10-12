@@ -24,6 +24,7 @@ import peergos.server.sync.JdbcTreeState;
 import peergos.server.sync.PeergosSyncFS;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
+import peergos.shared.login.DeviceTokenStore;
 import peergos.shared.corenode.CoreNode;
 import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.storage.ContentAddressedStorage;
@@ -63,7 +64,7 @@ public class SyncEndToEndTest {
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
         CoreNode core = NetworkAccess.buildDirectCorenode(poster);
         network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
-                5_000, crypto.hasher, false).join();
+                5_000, crypto.hasher, false, DeviceTokenStore.inMemory()).join();
     }
 
     @Test

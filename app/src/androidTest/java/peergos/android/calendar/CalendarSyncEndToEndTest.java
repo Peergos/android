@@ -37,6 +37,7 @@ import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
+import peergos.shared.login.DeviceTokenStore;
 import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.user.App;
 import peergos.shared.user.HttpPoster;
@@ -90,7 +91,7 @@ public class CalendarSyncEndToEndTest {
                 Optional.empty(), Optional.of("Peergos-android-calendar-test"));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
         NetworkAccess network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
-                7_000, crypto.hasher, false).join();
+                7_000, crypto.hasher, false, DeviceTokenStore.inMemory()).join();
 
         username = "androidcal" + Math.abs(new Random().nextInt() % 1_000_000);
         session = UserContext.signUp(username, "test-password-1", "", network, crypto).join();
