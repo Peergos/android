@@ -158,6 +158,7 @@ import peergos.shared.storage.auth.BatCave;
 import peergos.shared.storage.auth.HttpBatCave;
 import peergos.shared.storage.auth.OfflineBatCache;
 import peergos.shared.storage.controller.HttpInstanceAdmin;
+import peergos.server.storage.LocalVersionInstanceAdmin;
 import peergos.shared.user.Account;
 import peergos.shared.user.EntryPoint;
 import peergos.shared.user.HttpAccount;
@@ -1428,7 +1429,7 @@ public class MainActivity extends AppCompatActivity {
             SpaceUsageProxy httpUsage = new HttpSpaceUsage(poster, poster);
             ServerMessager serverMessager = new ServerMessager.HTTP(poster);
             BatCave batCave = new HttpBatCave(poster, poster);
-            HttpInstanceAdmin admin = new HttpInstanceAdmin(poster);
+            HttpInstanceAdmin admin = new LocalVersionInstanceAdmin(poster);
 
             FileBlockCache blockCache = new FileBlockCache(a.getPeergosDir().resolve(Paths.get("blocks", "cache")),
                     MAX_BLOCK_CACHE_SIZE);
