@@ -174,6 +174,13 @@ import peergos.shared.util.Either;
 public class MainActivity extends AppCompatActivity {
 
     public static final int PORT = 7777;
+    /** Opens one calendar entry, from a reminder: its UID, if it has reached Peergos yet, and
+     *  the start of the occurrence in ms. */
+    public static final String ACTION_SHOW_CALENDAR_ENTRY = "peergos.android.SHOW_CALENDAR_ENTRY";
+    public static final String EXTRA_ENTRY_ID = "entryId";
+    public static final String EXTRA_ENTRY_AT = "entryAt";
+    /** Set once the page has been asked for, after which a link reaches it as a fragment change. */
+    private boolean pageRequested = false;
     public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
     public static final String SYNC_CHANNEL_ID = "sync-progress";
     public static final int SYNC_NOTIFICATION_ID = 77;
@@ -604,7 +611,10 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             SyncRunner syncer = startServer(PORT);
             MainActivity.this.runOnUiThread(() -> {
-                webView.loadUrl("http://localhost:" + PORT);
+                // read now rather than at onCreate: a reminder tapped while the server was
+                // starting arrived through onNewIntent in the meantime
+                webView.loadUrl("http://localhost:" + PORT + linkFragment(getIntent()));
+                pageRequested = true;
                 progressDialog.hide();
             });
             // null means another instance already started the server, and it runs its own
@@ -613,6 +623,35 @@ public class MainActivity extends AppCompatActivity {
             if (syncer != null)
                 ForkJoinPool.commonPool().submit((Runnable) syncer::runNow);
         }).start();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        String fragment = linkFragment(intent);
+        if (fragment.isEmpty() || ! pageRequested)
+            return;
+        // the page follows a fragment change itself, signed in or not, without a reload
+        webView.evaluateJavascript("window.location.hash = " + JSONObject.quote(fragment) + ";", null);
+    }
+
+    /** The web app's link for what this intent asks to open, or empty for nothing in particular. */
+    static String linkFragment(Intent intent) {
+        if (intent == null || ! ACTION_SHOW_CALENDAR_ENTRY.equals(intent.getAction()))
+            return "";
+        try {
+            JSONObject args = new JSONObject();
+            String id = intent.getStringExtra(EXTRA_ENTRY_ID);
+            if (id != null && intent.hasExtra(EXTRA_ENTRY_AT))
+                args.put("entry", new JSONObject()
+                        .put("id", id)
+                        .put("at", intent.getLongExtra(EXTRA_ENTRY_AT, 0)));
+            JSONObject props = new JSONObject().put("app", "Calendar").put("args", args);
+            return "#" + Uri.encode(props.toString());
+        } catch (JSONException e) {
+            return "";
+        }
     }
 
     class NavigationHandler extends WebViewClient {
