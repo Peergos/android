@@ -31,8 +31,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import peergos.android.MainActivity;
 import peergos.android.R;
 import peergos.android.sync.PeergosAccount;
+import peergos.server.webdav.caldav.CalendarStore;
 
 /**
  * Rings the reminders of the Peergos calendars, as a calendar app does for its own events.
@@ -131,11 +133,28 @@ public class ReminderReceiver extends BroadcastReceiver {
                 if (firstRun && alarmTime < now - JUST_DUE_MS)
                     continue;
                 // one notification per occurrence: a second reminder for it replaces the first
-                manager.notify(CHANNEL_ID, Objects.hash(event, begin), notification(context,
+                int id = Objects.hash(event, begin);
+                manager.notify(CHANNEL_ID, id, notification(context, id, uid(resolver, event),
                         cursor.getString(2), begin, cursor.getLong(4), cursor.getInt(5) != 0, cursor.getString(6)));
             }
         }
         prefs.edit().putStringSet(RUNG_KEY, rung).apply();
+    }
+
+    /** The entry's UID in Peergos, which the mirror files as &lt;uid&gt;.ics. An exception to a
+     *  series is a row of its own pointing at the series, and the series is the entry. Empty for
+     *  one made on the phone that has not been uploaded yet. */
+    private static Optional<String> uid(ContentResolver resolver, long event) {
+        try (Cursor cursor = resolver.query(CalendarContract.Events.CONTENT_URI,
+                new String[]{CalendarContract.Events._SYNC_ID, CalendarContract.Events.ORIGINAL_SYNC_ID},
+                CalendarContract.Events._ID + "=?", new String[]{Long.toString(event)}, null)) {
+            if (cursor == null || ! cursor.moveToFirst())
+                return Optional.empty();
+            String name = cursor.isNull(0) ? cursor.getString(1) : cursor.getString(0);
+            if (name == null || ! name.endsWith(CalendarStore.ICS_SUFFIX))
+                return Optional.empty();
+            return Optional.of(name.substring(0, name.length() - CalendarStore.ICS_SUFFIX.length()));
+        }
     }
 
     private static List<Long> ourCalendars(ContentResolver resolver, Account account) {
@@ -158,15 +177,22 @@ public class ReminderReceiver extends BroadcastReceiver {
         manager.createNotificationChannel(channel);
     }
 
-    private static Notification notification(Context context, String title, long begin, long end,
-                                             boolean allDay, String location) {
+    private static Notification notification(Context context, int id, Optional<String> uid, String title,
+                                             long begin, long end, boolean allDay, String location) {
         // an all-day event is stored at midnight UTC, and shown as its date, not a time
         String when = allDay
                 ? DateUtils.formatDateRange(context, new Formatter(), begin, begin,
                         DateUtils.FORMAT_SHOW_DATE, "UTC").toString()
                 : DateUtils.formatDateRange(context, begin, end, DateUtils.FORMAT_SHOW_TIME);
         String text = TextUtils.isEmpty(location) ? when : when + " · " + location;
-        Intent open = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        // Tapping it opens this entry in the calendar. Single top and clear top bring back the
+        // running activity, which serves the page, rather than starting a second one.
+        Intent open = new Intent(context, MainActivity.class)
+                .setAction(MainActivity.ACTION_SHOW_CALENDAR_ENTRY)
+                .putExtra(MainActivity.EXTRA_ENTRY_AT, begin)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        uid.ifPresent(u -> open.putExtra(MainActivity.EXTRA_ENTRY_ID, u));
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(TextUtils.isEmpty(title) ? "(No title)" : title)
@@ -174,9 +200,9 @@ public class ReminderReceiver extends BroadcastReceiver {
                 .setCategory(NotificationCompat.CATEGORY_EVENT)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true);
-        if (open != null)
-            builder.setContentIntent(PendingIntent.getActivity(context, 0, open,
-                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        // a request code of its own, or every reminder's tap would share the latest one's extras
+        builder.setContentIntent(PendingIntent.getActivity(context, id, open,
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         return builder.build();
     }
 
