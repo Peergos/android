@@ -216,6 +216,7 @@ public class MainActivity extends AppCompatActivity {
     // The server the app is pinned to: security keys only ever sign for it, whatever the page
     // asks for, and its pages, like payment, are the only foreign ones the main frame shows
     static volatile String serverHost = null;
+    static volatile String serverScheme = null;
     static volatile String webauthnOrigin = null;
     // set once this process's server is up: a server we didn't start, listening on our port, has none
     static volatile LocalApiAuth localAuth = null;
@@ -702,6 +703,8 @@ public class MainActivity extends AppCompatActivity {
             // hide the progress bar once the page has loaded
             progressDialog.dismiss();
             if (url.startsWith(OUR_ORIGIN + "/")) {
+                if (bridgeShim != null && ! shimAtDocumentStart)
+                    webView.evaluateJavascript(bridgeShim, null);
                 injectWebAuthnPolyfill();
             }
         }
@@ -1106,9 +1109,11 @@ public class MainActivity extends AppCompatActivity {
             "calendarChanged", "downloadLogs", "downloadSyncLog", "saveToDownloads",
             "openMountInFiles", "webauthnCreate", "webauthnGet");
 
+    private String bridgeShim = null;
+    private boolean shimAtDocumentStart = false;
+
     private void exposeBridge() {
-        if (! WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
-                ! WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        if (! WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
             System.err.println("This WebView is too old for the Peergos bridge, update Android System WebView");
             return;
         }
@@ -1128,7 +1133,11 @@ public class MainActivity extends AppCompatActivity {
                 "    });\n" +
                 "    window.Android = android;\n" +
                 "})();");
-        WebViewCompat.addDocumentStartJavaScript(webView, shim.toString(), ours);
+        bridgeShim = shim.toString();
+        // without it the shim goes in when the page has loaded, which is harmless anywhere: only our origin gets PeergosBridge
+        shimAtDocumentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
+        if (shimAtDocumentStart)
+            WebViewCompat.addDocumentStartJavaScript(webView, bridgeShim, ours);
     }
 
     private void onBridgeMessage(WebView view, WebMessageCompat message, Uri sourceOrigin,
@@ -1172,7 +1181,7 @@ public class MainActivity extends AppCompatActivity {
     private static boolean isServer(Uri url) {
         String host = url.getHost();
         String server = serverHost;
-        return "https".equals(url.getScheme()) && host != null && server != null
+        return url.getScheme() != null && url.getScheme().equals(serverScheme) && host != null && server != null
                 && (host.equals(server) || host.endsWith("." + server));
     }
 
@@ -1551,6 +1560,7 @@ public class MainActivity extends AppCompatActivity {
             String serverUrl = a.getArg("server-url", "https://peergos.net");
             URL target = new URL(serverUrl);
             serverHost = target.getHost();
+            serverScheme = target.getProtocol();
             webauthnOrigin = target.getProtocol() + "://" + target.getHost() + (target.getPort() == -1 ? "" : ":" + target.getPort());
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
