@@ -32,7 +32,6 @@ import android.os.storage.StorageManager;
 import android.util.Size;
 import android.view.ViewGroup;
 import android.webkit.DownloadListener;
-import android.webkit.JavascriptInterface;
 import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.ValueCallback;
@@ -74,6 +73,10 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.documentfile.provider.DocumentFile;
 import androidx.lifecycle.ProcessLifecycleOwner;
+import androidx.webkit.JavaScriptReplyProxy;
+import androidx.webkit.WebMessageCompat;
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
@@ -123,6 +126,7 @@ import peergos.server.JdbcPkiCache;
 import peergos.server.Main;
 import peergos.server.SyncProperties;
 import peergos.server.UserService;
+import peergos.server.net.LocalApiAuth;
 import peergos.server.corenode.JdbcIpnsAndSocial;
 import peergos.server.login.ConfigDeviceTokenStore;
 import peergos.server.login.JdbcAccount;
@@ -209,7 +213,13 @@ public class MainActivity extends AppCompatActivity {
     volatile int pendingCallbackId = -1;
     interface Fido2Op { void run(Ctap2Session ctap2) throws Exception; }
     volatile Fido2Op pendingOp = null;
-    volatile String webauthnDefaultRpId = "localhost"; // updated when server starts
+    // The server the app is pinned to: security keys only ever sign for it, whatever the page
+    // asks for, and its pages, like payment, are the only foreign ones the main frame shows
+    static volatile String serverHost = null;
+    static volatile String serverScheme = null;
+    static volatile String webauthnOrigin = null;
+    // set once this process's server is up: a server we didn't start, listening on our port, has none
+    static volatile LocalApiAuth localAuth = null;
     Crypto crypto;
     HttpPoster poster;
     ContentAddressedStorage localDht;
@@ -264,7 +274,6 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean wantsDirectory = false; // flag set by JS
 
-    @JavascriptInterface
     public void notifyDirectoryRequest() {
         wantsDirectory = true;
     }
@@ -272,7 +281,6 @@ public class MainActivity extends AppCompatActivity {
     /** The page's calendar saved or deleted something. Mirroring it into the device's calendar
      *  now is what lets the reminder of an event starting soon go off: left to the periodic
      *  sync, the event can arrive half an hour later, after its reminder was due. */
-    @JavascriptInterface
     public void calendarChanged() {
         PeergosAccount.requestCalendarSync(getApplicationContext());
     }
@@ -283,7 +291,6 @@ public class MainActivity extends AppCompatActivity {
     /** Bundle the rotated peergos.&lt;N&gt;.log files in PEERGOS_PATH (up to 10, written by
      *  java.util.logging.FileHandler with pattern "peergos.%g.log") into a single text
      *  file and drop it in the user's Downloads folder via MediaStore. */
-    @JavascriptInterface
     public void downloadLogs() {
         new Thread(() -> {
             try {
@@ -333,7 +340,6 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    @JavascriptInterface
     public void downloadSyncLog(String label) {
         new Thread(() -> {
             try {
@@ -395,7 +401,6 @@ public class MainActivity extends AppCompatActivity {
 
     /** A download the page has already built in memory. A blob: url never reaches
      *  our DownloadListener, so the page hands us the bytes instead. */
-    @JavascriptInterface
     public void saveToDownloads(String filename, String mimeType, String content) {
         new Thread(() -> {
             String name = filename.replaceAll("[/\\\\:*?\"<>|]", "_");
@@ -490,7 +495,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @JavascriptInterface
     public void openMountInFiles() {
         runOnUiThread(() -> {
             String username = PeergosSession.context().map(c -> c.username).orElse(null);
@@ -577,7 +581,7 @@ public class MainActivity extends AppCompatActivity {
         // handling file upload mechanism
         webView.setWebChromeClient(new UploadHandler());
 
-        webView.addJavascriptInterface(this, "Android");
+        exposeBridge();
         getOnBackPressedDispatcher().addCallback(this, backCallback);
 
         ServiceWorkerController swController = ServiceWorkerController.getInstance();
@@ -610,10 +614,16 @@ public class MainActivity extends AppCompatActivity {
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
             SyncRunner syncer = startServer(PORT);
+            LocalApiAuth auth = localAuth;
             MainActivity.this.runOnUiThread(() -> {
+                if (auth == null) {
+                    progressDialog.hide();
+                    Toast.makeText(this, "Another app is using port " + PORT + ", which Peergos needs", Toast.LENGTH_LONG).show();
+                    return;
+                }
                 // read now rather than at onCreate: a reminder tapped while the server was
                 // starting arrived through onNewIntent in the meantime
-                webView.loadUrl("http://localhost:" + PORT + linkFragment(getIntent()));
+                webView.loadUrl(auth.launchUrl(PORT) + linkFragment(getIntent()));
                 pageRequested = true;
                 progressDialog.hide();
             });
@@ -659,10 +669,14 @@ public class MainActivity extends AppCompatActivity {
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             System.out.println("WebViewClient url loaded " + request.getUrl().toString());
             String encodedPath = request.getUrl().getEncodedPath();
-            boolean isDownload = encodedPath.startsWith("/" + Constants.ANDROID_FILE_REFLECTOR);
-            if (! isDownload)
+            boolean isDownload = encodedPath != null && encodedPath.startsWith("/" + Constants.ANDROID_FILE_REFLECTOR);
+            if (isDownload) {
+                downloadFile(request.getUrl());
+                return true;
+            }
+            if (! request.isForMainFrame() || isOurs(request.getUrl()) || isServer(request.getUrl()))
                 return false;
-            downloadFile(request.getUrl());
+            openExternally(request.getUrl());
             return true;
         }
 
@@ -688,7 +702,9 @@ public class MainActivity extends AppCompatActivity {
 //            super.onPageFinished(view, url);
             // hide the progress bar once the page has loaded
             progressDialog.dismiss();
-            if (url.startsWith("http://localhost:")) {
+            if (url.startsWith(OUR_ORIGIN + "/")) {
+                if (bridgeShim != null && ! shimAtDocumentStart)
+                    webView.evaluateJavascript(bridgeShim, null);
                 injectWebAuthnPolyfill();
             }
         }
@@ -1082,6 +1098,104 @@ public class MainActivity extends AppCompatActivity {
         yubiKitManager.stopNfcDiscovery(this);
     }
 
+    // ---- page bridge ----
+
+    static final String OUR_ORIGIN = "http://localhost:" + PORT;
+
+    /** Everything the page can ask of us. A javascript interface is handed to every frame of
+     *  every page the webview loads, so instead the page posts a message, which only our own
+     *  origin can, and window.Android is a shim over that for the web ui. */
+    private static final List<String> BRIDGE_METHODS = Arrays.asList("notifyDirectoryRequest",
+            "calendarChanged", "downloadLogs", "downloadSyncLog", "saveToDownloads",
+            "openMountInFiles", "webauthnCreate", "webauthnGet");
+
+    private String bridgeShim = null;
+    private boolean shimAtDocumentStart = false;
+
+    private void exposeBridge() {
+        if (! WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            System.err.println("This WebView is too old for the Peergos bridge, update Android System WebView");
+            return;
+        }
+        Set<String> ours = Collections.singleton(OUR_ORIGIN);
+        WebViewCompat.addWebMessageListener(webView, "PeergosBridge", ours, this::onBridgeMessage);
+        StringBuilder shim = new StringBuilder("(function () {\n" +
+                "    var bridge = window.PeergosBridge;\n" +
+                "    if (! bridge || window.Android) return;\n" +
+                "    var android = {};\n" +
+                "    [");
+        for (int i = 0; i < BRIDGE_METHODS.size(); i++)
+            shim.append(i == 0 ? "" : ", ").append(JSONObject.quote(BRIDGE_METHODS.get(i)));
+        shim.append("].forEach(function (method) {\n" +
+                "        android[method] = function () {\n" +
+                "            bridge.postMessage(JSON.stringify({method: method, args: Array.prototype.slice.call(arguments)}));\n" +
+                "        };\n" +
+                "    });\n" +
+                "    window.Android = android;\n" +
+                "})();");
+        bridgeShim = shim.toString();
+        // without it the shim goes in when the page has loaded, which is harmless anywhere: only our origin gets PeergosBridge
+        shimAtDocumentStart = WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT);
+        if (shimAtDocumentStart)
+            WebViewCompat.addDocumentStartJavaScript(webView, bridgeShim, ours);
+    }
+
+    private void onBridgeMessage(WebView view, WebMessageCompat message, Uri sourceOrigin,
+                                 boolean isMainFrame, JavaScriptReplyProxy reply) {
+        // the app frames run other people's code, and live on subdomains, but same origin frames are no business of theirs either
+        if (! isMainFrame || ! OUR_ORIGIN.equals(sourceOrigin.toString()) || message.getData() == null)
+            return;
+        try {
+            JSONObject call = new JSONObject(message.getData());
+            String method = call.getString("method");
+            JSONArray args = call.optJSONArray("args");
+            if (args == null)
+                args = new JSONArray();
+            switch (method) {
+                case "notifyDirectoryRequest": notifyDirectoryRequest(); break;
+                case "calendarChanged": calendarChanged(); break;
+                case "downloadLogs": downloadLogs(); break;
+                case "downloadSyncLog": downloadSyncLog(args.getString(0)); break;
+                case "saveToDownloads": saveToDownloads(args.getString(0), args.getString(1), args.getString(2)); break;
+                case "openMountInFiles": openMountInFiles(); break;
+                case "webauthnCreate": webauthnCreate(args.getInt(0), args.getString(1)); break;
+                case "webauthnGet": webauthnGet(args.getInt(0), args.getString(1)); break;
+                default: System.err.println("Unknown bridge method " + method);
+            }
+        } catch (JSONException e) {
+            System.err.println("Invalid bridge message: " + e.getMessage());
+        }
+    }
+
+    /** Our ui, or one of the apps it frames on a subdomain */
+    private static boolean isOurs(Uri url) {
+        String scheme = url.getScheme();
+        if ("blob".equals(scheme) || "about".equals(scheme))
+            return true;
+        String host = url.getHost();
+        return "http".equals(scheme) && url.getPort() == PORT && host != null
+                && (host.equals("localhost") || host.endsWith(".localhost"));
+    }
+
+    /** The server we are pinned to, or a subdomain of it, like its payment pages */
+    private static boolean isServer(Uri url) {
+        String host = url.getHost();
+        String server = serverHost;
+        return url.getScheme() != null && url.getScheme().equals(serverScheme) && host != null && server != null
+                && (host.equals(server) || host.endsWith("." + server));
+    }
+
+    private void openExternally(Uri url) {
+        String scheme = url.getScheme();
+        if (! "http".equals(scheme) && ! "https".equals(scheme) && ! "mailto".equals(scheme))
+            return;
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, url));
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "No app can open " + url, Toast.LENGTH_SHORT).show();
+        }
+    }
+
     // ---- WebAuthn / YubiKey bridge ----
 
     private void injectWebAuthnPolyfill() {
@@ -1098,20 +1212,24 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private String rpIdToOrigin(String rpId) {
-        if (rpId.equals("localhost")) return "http://localhost:" + PORT;
-        return "https://" + rpId;
+    /** The rp id of the server we are pinned to, if that is what was asked for */
+    private static String pinnedRpId(String requested) {
+        String rpId = serverHost;
+        if (rpId == null)
+            throw new IllegalStateException("Peergos is still starting");
+        if (requested != null && ! requested.isEmpty() && ! requested.equals(rpId))
+            throw new IllegalArgumentException("A security key can only be used here for " + rpId);
+        return rpId;
     }
 
-    @JavascriptInterface
     public void webauthnCreate(int callbackId, String optionsJson) {
         try {
             JSONObject pk = new JSONObject(optionsJson).getJSONObject("publicKey");
 
             // Build clientDataJSON with the correct origin for server-side validation
             JSONObject rpJson = pk.getJSONObject("rp");
-            String rpId = rpJson.optString("id", webauthnDefaultRpId);
-            String origin = rpIdToOrigin(rpId);
+            String rpId = pinnedRpId(rpJson.optString("id", null));
+            String origin = webauthnOrigin;
 
             byte[] challengeBytes = extractBytes(pk.get("challenge"));
             String clientDataJson = "{\"type\":\"webauthn.create\",\"challenge\":\""
@@ -1178,13 +1296,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    @JavascriptInterface
     public void webauthnGet(int callbackId, String optionsJson) {
         try {
             JSONObject pk = new JSONObject(optionsJson).getJSONObject("publicKey");
 
-            String rpId = pk.optString("rpId", webauthnDefaultRpId);
-            String origin = rpIdToOrigin(rpId);
+            String rpId = pinnedRpId(pk.optString("rpId", null));
+            String origin = webauthnOrigin;
 
             byte[] challengeBytes = extractBytes(pk.get("challenge"));
             String clientDataJson = "{\"type\":\"webauthn.get\",\"challenge\":\""
@@ -1440,6 +1557,11 @@ public class MainActivity extends AppCompatActivity {
         }, config.toFile().exists() ? Optional.of(config) : Optional.empty(), false);
         a.saveToFile();
         try {
+            String serverUrl = a.getArg("server-url", "https://peergos.net");
+            URL target = new URL(serverUrl);
+            serverHost = target.getHost();
+            serverScheme = target.getProtocol();
+            webauthnOrigin = target.getProtocol() + "://" + target.getHost() + (target.getPort() == -1 ? "" : ":" + target.getPort());
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
             AndroidPoster localPoster = new AndroidPoster(api.toURL(), false, Optional.empty(), Optional.empty());
@@ -1454,9 +1576,6 @@ public class MainActivity extends AppCompatActivity {
                 return null;
 
             // now start the server
-            String serverUrl = a.getArg("server-url", "https://peergos.net");
-            URL target = new URL(serverUrl);
-            webauthnDefaultRpId = target.getHost();
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
             CoreNode core = NetworkAccess.buildDirectCorenode(poster);
@@ -1576,6 +1695,7 @@ public class MainActivity extends AppCompatActivity {
                     Collections.emptyList(), Collections.emptyList(), appSubdomains, true,
                     Optional.empty(), Optional.empty(), Optional.empty(), true, false,
                     connectionBacklog, handlerPoolSize);
+            localAuth = server.localAuth;
 
             return syncer;
         } catch (IOException | URISyntaxException e) {
