@@ -828,7 +828,8 @@ public class MainActivity extends AppCompatActivity {
                 public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                     Uri url = request.getUrl();
                     System.out.println("WebViewClient payment page url loaded " + url.toString());
-                    if (url.getHost() != null && url.getHost().endsWith("peergos.net"))
+                    String host = url.getHost();
+                    if (host != null && (host.equals("peergos.net") || host.endsWith(".peergos.net")))
                         return false;
                     // This window is for the payment pages. Any other site a link opens in a window of its
                     // own - peergos.org from the sign-in logo, help pages - goes to the browser, as the main
