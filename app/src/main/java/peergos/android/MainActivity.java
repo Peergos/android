@@ -826,9 +826,24 @@ public class MainActivity extends AppCompatActivity {
             cardDetails.setWebViewClient(new WebViewClient() {
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                    System.out.println("WebViewClient payment page url loaded " + request.getUrl().toString());
-                    if (request.getUrl().getHost().endsWith("peergos.net"))
+                    Uri url = request.getUrl();
+                    System.out.println("WebViewClient payment page url loaded " + url.toString());
+                    if (url.getHost() != null && url.getHost().endsWith("peergos.net"))
                         return false;
+                    // This window is for the payment pages. Any other site a link opens in a window of its
+                    // own - peergos.org from the sign-in logo, help pages - goes to the browser, as the main
+                    // frame's links do: refused here, it left this window up and blank.
+                    String scheme = url.getScheme();
+                    if ("http".equals(scheme) || "https".equals(scheme) || "mailto".equals(scheme)) {
+                        openExternally(url);
+                        webView.post(() -> {
+                            if (cardDetails == view) {
+                                webView.removeView(view);
+                                cardDetails = null;
+                                updateBackCallback();
+                            }
+                        });
+                    }
                     return true;
                 }
             });
