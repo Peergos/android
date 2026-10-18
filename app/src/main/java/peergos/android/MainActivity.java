@@ -213,8 +213,9 @@ public class MainActivity extends AppCompatActivity {
     volatile int pendingCallbackId = -1;
     interface Fido2Op { void run(Ctap2Session ctap2) throws Exception; }
     volatile Fido2Op pendingOp = null;
-    // Security keys only ever sign for the server the app is pinned to, whatever the page asks for
-    static volatile String webauthnRpId = null;
+    // The server the app is pinned to: security keys only ever sign for it, whatever the page
+    // asks for, and its pages, like payment, are the only foreign ones the main frame shows
+    static volatile String serverHost = null;
     static volatile String webauthnOrigin = null;
     // set once this process's server is up: a server we didn't start, listening on our port, has none
     static volatile LocalApiAuth localAuth = null;
@@ -672,8 +673,7 @@ public class MainActivity extends AppCompatActivity {
                 downloadFile(request.getUrl());
                 return true;
             }
-            // anything else in the main frame would be loaded with our bridge beside it
-            if (! request.isForMainFrame() || isOurs(request.getUrl()))
+            if (! request.isForMainFrame() || isOurs(request.getUrl()) || isServer(request.getUrl()))
                 return false;
             openExternally(request.getUrl());
             return true;
@@ -1168,6 +1168,14 @@ public class MainActivity extends AppCompatActivity {
                 && (host.equals("localhost") || host.endsWith(".localhost"));
     }
 
+    /** The server we are pinned to, or a subdomain of it, like its payment pages */
+    private static boolean isServer(Uri url) {
+        String host = url.getHost();
+        String server = serverHost;
+        return "https".equals(url.getScheme()) && host != null && server != null
+                && (host.equals(server) || host.endsWith("." + server));
+    }
+
     private void openExternally(Uri url) {
         String scheme = url.getScheme();
         if (! "http".equals(scheme) && ! "https".equals(scheme) && ! "mailto".equals(scheme))
@@ -1197,7 +1205,7 @@ public class MainActivity extends AppCompatActivity {
 
     /** The rp id of the server we are pinned to, if that is what was asked for */
     private static String pinnedRpId(String requested) {
-        String rpId = webauthnRpId;
+        String rpId = serverHost;
         if (rpId == null)
             throw new IllegalStateException("Peergos is still starting");
         if (requested != null && ! requested.isEmpty() && ! requested.equals(rpId))
@@ -1542,7 +1550,7 @@ public class MainActivity extends AppCompatActivity {
         try {
             String serverUrl = a.getArg("server-url", "https://peergos.net");
             URL target = new URL(serverUrl);
-            webauthnRpId = target.getHost();
+            serverHost = target.getHost();
             webauthnOrigin = target.getProtocol() + "://" + target.getHost() + (target.getPort() == -1 ? "" : ":" + target.getPort());
             // check if the local server is already running first
             URI api = new URI("http://localhost:" + port);
