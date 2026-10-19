@@ -150,7 +150,7 @@ public class ReminderReceiver extends BroadcastReceiver {
                 CalendarContract.Events._ID + "=?", new String[]{Long.toString(event)}, null)) {
             if (cursor == null || ! cursor.moveToFirst())
                 return Optional.empty();
-            String name = cursor.isNull(0) ? cursor.getString(1) : cursor.getString(0);
+            String name = cursor.isNull(1) ? cursor.getString(0) : cursor.getString(1);
             if (name == null || ! name.endsWith(CalendarStore.ICS_SUFFIX))
                 return Optional.empty();
             return Optional.of(name.substring(0, name.length() - CalendarStore.ICS_SUFFIX.length()));

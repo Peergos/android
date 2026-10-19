@@ -138,6 +138,50 @@ public class CalendarSyncTest {
                 values.get(CalendarContract.Events.DTEND) == null);
     }
 
+    /** How the web app records one occurrence moved or deleted: an exclusion on the series. */
+    @Test
+    public void mapsTheOccurrencesASeriesLeavesOut() {
+        ContentValues values = translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+                + "UID:weekly\r\nSUMMARY:Weekly sync\r\n"
+                + "DTSTART;TZID=Europe/London:20240715T090000\r\nDTEND;TZID=Europe/London:20240715T100000\r\n"
+                + "RRULE:FREQ=WEEKLY\r\nEXDATE;TZID=Europe/London:20240722T090000,20240729T090000\r\n"
+                + "EXDATE:20240805T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+        assertEquals("20240722T080000Z,20240729T080000Z,20240805T080000Z",
+                values.getAsString(CalendarContract.Events.EXDATE));
+    }
+
+    /** Written even when empty, so an exclusion removed in Peergos is removed on the phone. */
+    @Test
+    public void aSeriesWithNoExclusionsClearsTheColumn() {
+        ContentValues values = translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+                + "UID:weekly\r\nDTSTART:20240315T090000Z\r\nDTEND:20240315T100000Z\r\n"
+                + "RRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+        assertTrue(values.containsKey(CalendarContract.Events.EXDATE));
+        assertTrue(values.get(CalendarContract.Events.EXDATE) == null);
+    }
+
+    /** How a CalDAV client records one occurrence changed: a second VEVENT in the same file.
+     *  The series is the one without a RECURRENCE-ID, whichever comes first. */
+    @Test
+    public void mapsAnOverrideInTheSameFile() {
+        Optional<EventTranslator.Translation> translated = EventTranslator.translate("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
+                + "BEGIN:VEVENT\r\nUID:weekly\r\nRECURRENCE-ID:20240322T090000Z\r\nSUMMARY:Moved\r\n"
+                + "DTSTART:20240322T140000Z\r\nDTEND:20240322T150000Z\r\nEND:VEVENT\r\n"
+                + "BEGIN:VEVENT\r\nUID:weekly\r\nSUMMARY:Weekly sync\r\n"
+                + "DTSTART:20240315T090000Z\r\nDTEND:20240315T100000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\n"
+                + "END:VCALENDAR\r\n", 42);
+        assertTrue(translated.isPresent());
+        assertEquals("Weekly sync", translated.get().values().getAsString(CalendarContract.Events.TITLE));
+        assertEquals(1, translated.get().overrides().size());
+        EventTranslator.Override override = translated.get().overrides().get(0);
+        assertEquals(1711098000000L, override.instance());
+        assertEquals("Moved", override.values().getAsString(CalendarContract.Events.TITLE));
+        assertEquals(Long.valueOf(1711098000000L), override.values().getAsLong(CalendarContract.Events.ORIGINAL_INSTANCE_TIME));
+        assertEquals(Long.valueOf(1711116000000L), override.values().getAsLong(CalendarContract.Events.DTSTART));
+        assertEquals(Long.valueOf(1711119600000L), override.values().getAsLong(CalendarContract.Events.DTEND));
+        assertTrue(override.values().get(CalendarContract.Events.RRULE) == null);
+    }
+
     /**
      * A calendar collection also carries tasks, which CalendarContract has no table for.
      * The one with a DTSTART is the dangerous case: it would map cleanly onto an event row

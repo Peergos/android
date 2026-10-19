@@ -62,6 +62,18 @@ public final class ICalWriter {
         return new Line(name, ":" + rest);
     }
 
+    /** The occurrences a series leaves out, in the form {@link #timestamp} or {@link #date}
+     *  writes its start. */
+    public static Line exdates(List<Instant> instants, boolean allDay) {
+        StringBuilder values = new StringBuilder();
+        for (Instant instant : instants) {
+            if (values.length() > 0)
+                values.append(',');
+            values.append((allDay ? DATE : UTC_STAMP).format(instant));
+        }
+        return new Line("EXDATE", (allDay ? ";VALUE=DATE:" : ":") + values);
+    }
+
     /**
      * Replaces these properties inside the first VEVENT, adding any that were absent and
      * dropping those named in {@code removals}. Everything else in the file survives
@@ -208,6 +220,93 @@ public final class ICalWriter {
                 return each.substring(equals + 1).trim();
         }
         return null;
+    }
+
+    /**
+     * Takes one occurrence out of a series, as the web app does when that occurrence alone
+     * is changed or deleted: an EXDATE on the series, in the form of its DTSTART. An
+     * override a CalDAV client stored for the same occurrence — a VEVENT carrying its
+     * RECURRENCE-ID — goes too, or it would go on drawing the occurrence the phone just
+     * removed. The file comes back unchanged if there is no series in it, or it already
+     * leaves that occurrence out.
+     */
+    public static String excludeOccurrence(String ics, long instanceMillis) {
+        Instant instance = Instant.ofEpochMilli(instanceMillis);
+        List<String> lines = ICal.unfold(ics);
+        // top-level VEVENT blocks, as [first line, END line]
+        List<int[]> events = new ArrayList<>();
+        int depth = 0;
+        int open = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            String name = nameOf(lines.get(i));
+            if (name.equals("BEGIN")) {
+                depth++;
+                if (depth == 2 && valueOf(lines.get(i)).equalsIgnoreCase("VEVENT"))
+                    open = i;
+            } else if (name.equals("END")) {
+                if (depth == 2 && open >= 0) {
+                    events.add(new int[]{open, i});
+                    open = -1;
+                }
+                depth--;
+            }
+        }
+        int[] series = null;
+        ICal.Property start = null;
+        boolean excluded = false;
+        List<int[]> overrides = new ArrayList<>();
+        for (int[] event : events) {
+            Optional<ICal.Property> recurrenceId = ownProperty(lines, event, "RECURRENCE-ID");
+            if (recurrenceId.isPresent()) {
+                if (ICal.toInstant(recurrenceId.get()).map(instance::equals).orElse(false))
+                    overrides.add(event);
+                continue;
+            }
+            if (series != null)
+                continue;
+            Optional<ICal.Property> dtstart = ownProperty(lines, event, "DTSTART");
+            if (dtstart.isEmpty() || ownProperty(lines, event, "RRULE").isEmpty())
+                continue;
+            series = event;
+            start = dtstart.get();
+            for (ICal.Property exdate : ownProperties(lines, event, "EXDATE"))
+                excluded |= Exdates.values(exdate).contains(instance);
+        }
+        if (series == null || (excluded && overrides.isEmpty()))
+            return ics;
+
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            int index = i;
+            if (overrides.stream().anyMatch(o -> index >= o[0] && index <= o[1]))
+                continue;
+            if (i == series[1] && ! excluded)
+                out.add(Exdates.line(start, List.of(instance)));
+            out.add(lines.get(i));
+        }
+        return String.join("\r\n", out) + "\r\n";
+    }
+
+    /** A property of the event itself, not of an alarm or other component nested in it. */
+    private static Optional<ICal.Property> ownProperty(List<String> lines, int[] event, String name) {
+        List<ICal.Property> all = ownProperties(lines, event, name);
+        return all.isEmpty() ? Optional.empty() : Optional.of(all.get(0));
+    }
+
+    private static List<ICal.Property> ownProperties(List<String> lines, int[] event, String name) {
+        List<ICal.Property> out = new ArrayList<>();
+        int nested = 0;
+        for (int i = event[0] + 1; i < event[1]; i++) {
+            String line = lines.get(i);
+            String lineName = nameOf(line);
+            if (lineName.equals("BEGIN"))
+                nested++;
+            else if (lineName.equals("END"))
+                nested--;
+            else if (nested == 0 && lineName.equals(name))
+                ICal.parseProperty(line).ifPresent(out::add);
+        }
+        return out;
     }
 
     /** A whole VCALENDAR for an event that does not exist in Peergos yet. */

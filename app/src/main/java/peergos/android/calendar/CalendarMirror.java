@@ -37,6 +37,16 @@ public class CalendarMirror {
 
     private static final String TAG = "PeergosCalendar";
 
+    /**
+     * Stored in SYNC_DATA2 of every series and event row this version writes. A row without
+     * it was written before exclusions were mirrored, so its EXDATE column says nothing about
+     * the file and an upload must not write it back.
+     */
+    static final String FORMAT = "2";
+
+    /** Between a file's name and the occurrence an override in it replaces. */
+    static final String OVERRIDE_SEPARATOR = "#";
+
     private final ContentProviderClient provider;
     private final Account account;
     private final CalendarStore store;
@@ -137,6 +147,9 @@ public class CalendarMirror {
     /**
      * Events are compared by ETag, which is the Peergos content hash: unchanged events cost
      * a listing and nothing more, and in particular are never re-downloaded.
+     *
+     * The one exception is a row an earlier version of the mirror wrote, which
+     * {@link #FORMAT} tells apart: it has no exclusions, so it is read again once.
      */
     private int syncEvents(long calendarId, String directory) throws Exception {
         Map<String, String> onDevice = existingEvents(calendarId);
@@ -160,9 +173,11 @@ public class CalendarMirror {
             ContentValues values = translated.get().values();
             values.put(CalendarContract.Events._SYNC_ID, object.name);
             values.put(CalendarContract.Events.SYNC_DATA1, etag);
+            values.put(CalendarContract.Events.SYNC_DATA2, FORMAT);
             boolean known = onDevice.containsKey(object.name);
             long eventId;
             if (known) {
+                deleteOverrides(calendarId, object.name);
                 provider.update(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values,
                         CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events._SYNC_ID + "=?",
                         new String[]{Long.toString(calendarId), object.name});
@@ -171,8 +186,10 @@ public class CalendarMirror {
                 Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values);
                 eventId = inserted == null ? -1 : ContentUris.parseId(inserted);
             }
-            if (eventId >= 0)
+            if (eventId >= 0) {
                 syncReminder(eventId, translated.get().reminderMinutes(), known);
+                insertOverrides(eventId, object.name, etag, translated.get().overrides());
+            }
             // so a name appearing twice in one listing updates rather than inserting again
             onDevice.put(object.name, etag);
             changes++;
@@ -183,12 +200,41 @@ public class CalendarMirror {
                 removed.add(name);
         }
         for (String name : removed) {
+            deleteOverrides(calendarId, name);
             provider.delete(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
                     CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events._SYNC_ID + "=?",
                     new String[]{Long.toString(calendarId), name});
             changes++;
         }
         return changes;
+    }
+
+    /**
+     * Occurrences a CalDAV client overrode inside the series' own file, as exception rows of
+     * the series. Each is named after the file and the occurrence it replaces, which keeps
+     * it apart from every file name in the listing.
+     */
+    private void insertOverrides(long seriesId, String name, String etag,
+                                 List<EventTranslator.Override> overrides) throws Exception {
+        for (EventTranslator.Override override : overrides) {
+            ContentValues values = override.values();
+            values.put(CalendarContract.Events._SYNC_ID, name + OVERRIDE_SEPARATOR + override.instance());
+            values.put(CalendarContract.Events.ORIGINAL_SYNC_ID, name);
+            values.put(CalendarContract.Events.ORIGINAL_ID, seriesId);
+            values.put(CalendarContract.Events.SYNC_DATA1, etag);
+            Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values);
+            if (inserted != null)
+                syncReminder(ContentUris.parseId(inserted), override.reminderMinutes(), false);
+        }
+    }
+
+    /** The overrides last read from this file. An exception made on the phone and not yet
+     *  uploaded has no _SYNC_ID, and stays. */
+    private void deleteOverrides(long calendarId, String name) throws Exception {
+        provider.delete(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
+                CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events.ORIGINAL_SYNC_ID
+                        + "=? AND " + CalendarContract.Events._SYNC_ID + " IS NOT NULL",
+                new String[]{Long.toString(calendarId), name});
     }
 
     /**
@@ -220,16 +266,20 @@ public class CalendarMirror {
         }
     }
 
-    /** Member name to the ETag we stored when we last wrote it. */
+    /** Member name to the ETag we stored when we last wrote it, or "" if that was in an
+     *  older format. Exception rows are not members: they come and go with their series. */
     private Map<String, String> existingEvents(long calendarId) throws Exception {
         Map<String, String> byName = new HashMap<>();
         try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
-                new String[]{CalendarContract.Events._SYNC_ID, CalendarContract.Events.SYNC_DATA1},
-                CalendarContract.Events.CALENDAR_ID + "=?",
+                new String[]{CalendarContract.Events._SYNC_ID, CalendarContract.Events.SYNC_DATA1,
+                        CalendarContract.Events.SYNC_DATA2},
+                CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events.ORIGINAL_SYNC_ID + " IS NULL",
                 new String[]{Long.toString(calendarId)}, null)) {
             while (cursor != null && cursor.moveToNext()) {
-                if (! cursor.isNull(0))
-                    byName.put(cursor.getString(0), cursor.isNull(1) ? "" : cursor.getString(1));
+                if (cursor.isNull(0))
+                    continue;
+                boolean current = FORMAT.equals(cursor.getString(2)) && ! cursor.isNull(1);
+                byName.put(cursor.getString(0), current ? cursor.getString(1) : "");
             }
         }
         return byName;

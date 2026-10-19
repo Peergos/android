@@ -5,6 +5,7 @@ import android.provider.CalendarContract;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -16,18 +17,26 @@ import peergos.server.webdav.caldav.ICal;
  * into the app from the server jar, so the two surfaces cannot drift in how they read a
  * date or decide that an event recurs.
  *
- * Only the fields the web calendar app actually writes are mapped. Attendees and exceptions
- * to recurring events live in their own contract tables and are left for the write path,
- * which is where they start to matter. Alarms are the exception: a reminder is the whole
+ * Only the fields the web calendar app actually writes are mapped. Attendees live in their
+ * own contract table and are left alone. Alarms are the exception: a reminder is the whole
  * point of mirroring for many people, so a VALARM becomes a Reminders row, which is why a
  * translation carries {@link Translation#reminderMinutes} beside the event row.
+ *
+ * A series brings its exclusions (EXDATE), which is how the web app records an occurrence
+ * changed or deleted on its own. A CalDAV client may instead store a changed occurrence as a
+ * second VEVENT in the same file, carrying a RECURRENCE-ID; each of those becomes an
+ * {@link Translation#overrides override}, an exception row of the series in contract terms.
  */
 public final class EventTranslator {
 
     private EventTranslator() {}
 
-    /** An event row, and the one alarm the Reminders table can hold for it. */
-    public record Translation(ContentValues values, Optional<Integer> reminderMinutes) {}
+    /** An event row, the one alarm the Reminders table can hold for it, and for a series the
+     *  occurrences a CalDAV client overrode within the same file. */
+    public record Translation(ContentValues values, Optional<Integer> reminderMinutes, List<Override> overrides) {}
+
+    /** One overridden occurrence: the start it replaces, and the row that replaces it. */
+    public record Override(long instance, ContentValues values, Optional<Integer> reminderMinutes) {}
 
     /**
      * The contract rows for one calendar object, or empty if it carries nothing we can
@@ -40,12 +49,41 @@ public final class EventTranslator {
         List<ICal.Component> parts = parsed.get().scheduleComponents();
         if (parts.isEmpty())
             return Optional.empty();
-        ICal.Component event = parts.get(0);
         // A calendar collection also holds tasks, which the contract has no table for, and
         // a VTODO with a DTSTART would otherwise map cleanly onto an event row and appear
         // on the phone as one.
-        if (! event.name.equals("VEVENT"))
+        if (! parts.get(0).name.equals("VEVENT"))
             return Optional.empty();
+        ICal.Component event = parts.stream()
+                .filter(p -> p.name.equals("VEVENT") && p.property("RECURRENCE-ID").isEmpty())
+                .findFirst()
+                .orElse(parts.get(0));
+        Optional<ContentValues> values = values(event, calendarId);
+        if (values.isEmpty())
+            return Optional.empty();
+        boolean recurring = event.value("RRULE").isPresent();
+        List<Override> overrides = new ArrayList<>();
+        if (recurring) {
+            boolean allDay = values.get().getAsInteger(CalendarContract.Events.ALL_DAY) == 1;
+            for (ICal.Component part : parts) {
+                if (part == event || ! part.name.equals("VEVENT"))
+                    continue;
+                Optional<Instant> instance = part.property("RECURRENCE-ID").flatMap(ICal::toInstant);
+                if (instance.isEmpty())
+                    continue;
+                Optional<ContentValues> override = values(withoutRule(part), calendarId);
+                if (override.isEmpty())
+                    continue;
+                override.get().put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, instance.get().toEpochMilli());
+                override.get().put(CalendarContract.Events.ORIGINAL_ALL_DAY, allDay ? 1 : 0);
+                overrides.add(new Override(instance.get().toEpochMilli(), override.get(), reminderMinutes(part)));
+            }
+        }
+        return Optional.of(new Translation(values.get(), reminderMinutes(event), overrides));
+    }
+
+    /** The row for one VEVENT on its own. */
+    private static Optional<ContentValues> values(ICal.Component event, long calendarId) {
         Optional<ICal.Property> start = event.property("DTSTART");
         if (start.isEmpty())
             return Optional.empty();
@@ -53,10 +91,9 @@ public final class EventTranslator {
         if (from.isEmpty())
             return Optional.empty();
 
-        Optional<Integer> reminder = reminderMinutes(event);
         ContentValues values = new ContentValues();
         values.put(CalendarContract.Events.CALENDAR_ID, calendarId);
-        values.put(CalendarContract.Events.TITLE, event.value("SUMMARY").orElse(""));
+        values.put(CalendarContract.Events.TITLE, unescape(event.value("SUMMARY").orElse("")));
         event.value("DESCRIPTION").ifPresent(d -> values.put(CalendarContract.Events.DESCRIPTION, unescape(d)));
         event.value("LOCATION").ifPresent(l -> values.put(CalendarContract.Events.EVENT_LOCATION, unescape(l)));
         values.put(CalendarContract.Events.DTSTART, from.get().toEpochMilli());
@@ -69,7 +106,7 @@ public final class EventTranslator {
         values.put(CalendarContract.Events.EVENT_TIMEZONE,
                 allDay ? "UTC" : start.get().param("TZID").orElse("UTC"));
 
-        values.put(CalendarContract.Events.HAS_ALARM, reminder.isPresent() ? 1 : 0);
+        values.put(CalendarContract.Events.HAS_ALARM, reminderMinutes(event).isPresent() ? 1 : 0);
 
         Optional<String> rrule = event.value("RRULE");
         if (rrule.isPresent()) {
@@ -77,10 +114,22 @@ public final class EventTranslator {
             // and rejects the row outright if both are set.
             values.put(CalendarContract.Events.RRULE, rrule.get());
             values.put(CalendarContract.Events.DURATION, duration(event, from.get(), allDay));
+            // Written even when empty, so an exclusion removed in Peergos is removed here too.
+            values.put(CalendarContract.Events.EXDATE, Exdates.toColumn(Exdates.of(event)));
         } else {
             values.put(CalendarContract.Events.DTEND, end(event, from.get(), allDay).toEpochMilli());
         }
-        return Optional.of(new Translation(values, reminder));
+        return Optional.of(values);
+    }
+
+    /** An override is one occurrence, even if the client that wrote it gave it a rule. */
+    private static ICal.Component withoutRule(ICal.Component event) {
+        List<ICal.Property> kept = new ArrayList<>();
+        for (ICal.Property property : event.properties) {
+            if (! property.name.equals("RRULE") && ! property.name.equals("EXDATE"))
+                kept.add(property);
+        }
+        return new ICal.Component(event.name, kept, event.children);
     }
 
     /**

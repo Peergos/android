@@ -10,8 +10,10 @@ import android.util.Log;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -28,11 +30,11 @@ import peergos.server.webdav.caldav.ICal;
  * written out as a *new* event rather than discarded. The user then sees both and decides,
  * which is the one outcome that cannot silently lose work.
  *
- * Exceptions to a recurring event take the same route. Android models one as its own row
- * pointing at the series through ORIGINAL_SYNC_ID, while the web app models it as a
- * separate file named after the parent and the recurrence id; until that mapping is
- * written, an edited instance is preserved as a standalone event and the series is
- * restored, so the edit survives even though it does not become a true exception.
+ * One occurrence of a series changed or deleted on the phone arrives as an exception row,
+ * pointing at the series through ORIGINAL_SYNC_ID. Peergos has no such thing: the web app
+ * excludes the occurrence from the series with an EXDATE and, for a change, keeps the new
+ * version as an event of its own. An exception is written the same way, so the web app,
+ * the CalDAV bridge and this mirror all read it back as one model.
  */
 public class CalendarUploader {
 
@@ -52,6 +54,11 @@ public class CalendarUploader {
             CalendarContract.Events.ALL_DAY,
             CalendarContract.Events.RRULE,
             CalendarContract.Events.ORIGINAL_SYNC_ID,
+            CalendarContract.Events.ORIGINAL_ID,
+            CalendarContract.Events.ORIGINAL_INSTANCE_TIME,
+            CalendarContract.Events.STATUS,
+            CalendarContract.Events.EXDATE,
+            CalendarContract.Events.SYNC_DATA2,
     };
 
     private final ContentProviderClient provider;
@@ -67,7 +74,11 @@ public class CalendarUploader {
     /** @return how many local changes were pushed. */
     public int upload(long calendarId, String directory) throws Exception {
         int pushed = 0;
-        List<Row> rows = dirtyRows(calendarId);
+        List<Row> rows = separateSplits(calendarId, dirtyRows(calendarId));
+        // Exceptions last: a series uploaded in this same pass gets the name an exception
+        // needs, and an exception's EXDATE must not land under a series edit that would then
+        // see the file changed and take it for a conflict.
+        rows.sort(Comparator.comparing(Row::isException));
         for (Row row : rows) {
             try {
                 pushed += apply(row, directory) ? 1 : 0;
@@ -79,19 +90,107 @@ public class CalendarUploader {
         return pushed;
     }
 
+    /**
+     * "This and following" changed on the phone. The provider splits the series by copying
+     * its row — _SYNC_ID and all — into a new series from that occurrence on, and cuts the
+     * original short, without marking it dirty. Left alone, the copy would be
+     * uploaded over the original's file, losing the occurrences before the split, and the
+     * cut would never reach Peergos. So the copy is made a new event, and the original,
+     * the earliest row of that name, is uploaded as it now ends.
+     */
+    private List<Row> separateSplits(long calendarId, List<Row> dirty) throws Exception {
+        List<Row> out = new ArrayList<>(dirty);
+        for (Row row : dirty) {
+            if (row.isException() || row.deleted || row.syncId == null)
+                continue;
+            List<Row> named = rowsNamed(calendarId, row.syncId);
+            if (named.size() < 2)
+                continue;
+            Row original = named.get(0);
+            for (Row copy : named.subList(1, named.size())) {
+                for (Row each : out) {
+                    if (each.id == copy.id) {
+                        each.syncId = null;
+                        each.etag = "";
+                    }
+                }
+            }
+            if (out.stream().noneMatch(r -> r.id == original.id))
+                out.add(original);
+        }
+        return out;
+    }
+
+    /** The series and single events filed under this name, oldest row first. */
+    private List<Row> rowsNamed(long calendarId, String syncId) throws Exception {
+        List<Row> rows = new ArrayList<>();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
+                EVENT_COLUMNS,
+                CalendarContract.Events.CALENDAR_ID + "=? AND " + CalendarContract.Events._SYNC_ID + "=? AND "
+                        + CalendarContract.Events.ORIGINAL_SYNC_ID + " IS NULL AND "
+                        + CalendarContract.Events.ORIGINAL_ID + " IS NULL",
+                new String[]{Long.toString(calendarId), syncId}, CalendarContract.Events._ID)) {
+            while (cursor != null && cursor.moveToNext())
+                rows.add(Row.from(cursor));
+        }
+        return rows;
+    }
+
     private boolean apply(Row row, String directory) throws Exception {
+        if (row.isException())
+            return exception(row, directory);
         if (row.deleted)
             return delete(row, directory);
-        if (row.originalSyncId != null) {
-            // An edited instance of a series: keep it as its own event and let the
-            // download pass put the untouched series back.
-            duplicate(row, directory);
-            purge(row.id);
-            return true;
-        }
         if (row.syncId == null)
             return create(row, directory);
         return update(row, directory);
+    }
+
+    /**
+     * One occurrence changed or deleted. Its exclusion goes into whatever version of the
+     * series Peergos now holds rather than being checked against the one the phone last
+     * saw: it touches only that occurrence, so there is nothing in a newer version for it
+     * to overwrite. The row goes either way, and the download pass brings back the series
+     * without the occurrence and, for a change, the new event in its place.
+     */
+    private boolean exception(Row row, String directory) throws Exception {
+        Optional<String> series = row.originalSyncId != null
+                ? Optional.of(row.originalSyncId)
+                : syncIdOf(row.originalId);
+        if (series.isEmpty()) {
+            // The series has not reached Peergos yet. It stays dirty until it has a name.
+            Log.i(TAG, "Exception " + row.id + " waits for its series to be uploaded");
+            return false;
+        }
+        Optional<AppDataStore.ObjectRef> remote = store.getObject(directory, series.get());
+        if (remote.isPresent() && row.originalInstanceTime != null) {
+            String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
+            String excluded = ICalWriter.excludeOccurrence(existing, row.originalInstanceTime);
+            if (! excluded.equals(existing))
+                store.putObject(directory, series.get(), excluded.getBytes(StandardCharsets.UTF_8), remote);
+        }
+        if (! row.cancelled()) {
+            String uid = UUID.randomUUID().toString();
+            List<ICalWriter.Line> properties = ours(row);
+            store.putObject(directory, uid + CalendarStore.ICS_SUFFIX,
+                    withReminder(ICalWriter.create(uid, properties), row).getBytes(StandardCharsets.UTF_8),
+                    Optional.empty());
+        }
+        purge(row.id);
+        return true;
+    }
+
+    /** The name a series row was uploaded under, if it has been. */
+    private Optional<String> syncIdOf(Long rowId) throws Exception {
+        if (rowId == null)
+            return Optional.empty();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Events.CONTENT_URI),
+                new String[]{CalendarContract.Events._SYNC_ID},
+                CalendarContract.Events._ID + "=?", new String[]{Long.toString(rowId)}, null)) {
+            if (cursor == null || ! cursor.moveToFirst() || cursor.isNull(0))
+                return Optional.empty();
+            return Optional.of(cursor.getString(0));
+        }
     }
 
     private boolean delete(Row row, String directory) throws Exception {
@@ -115,7 +214,7 @@ public class CalendarUploader {
     private boolean create(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
         write(directory, uid + CalendarStore.ICS_SUFFIX,
-                withReminder(ICalWriter.create(uid, ours(row)), row), row.id);
+                withReminder(ICalWriter.create(uid, ours(row)), row), row.id, true);
         return true;
     }
 
@@ -125,7 +224,7 @@ public class CalendarUploader {
             // Removed in Peergos while we were editing. Writing it back under the same name
             // resurrects the user's version rather than dropping their edit.
             write(directory, row.syncId,
-                    withReminder(ICalWriter.create(uidFor(row), ours(row)), row), row.id);
+                    withReminder(ICalWriter.create(uidFor(row), ours(row)), row), row.id, true);
             return true;
         }
         if (! remote.get().etag().equals(row.etag)) {
@@ -134,8 +233,15 @@ public class CalendarUploader {
             return true;
         }
         String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
-        String patched = ICalWriter.patch(existing, properties(row), Collections.emptyList());
-        write(directory, row.syncId, withReminder(patched, row), row.id);
+        // A row from before exclusions were mirrored has an EXDATE column that says nothing
+        // about the file, so the file's own are left as they are.
+        boolean faithful = CalendarMirror.FORMAT.equals(row.format);
+        List<ICalWriter.Line> properties = properties(row);
+        if (! faithful)
+            properties.removeIf(line -> line.name.equals("EXDATE"));
+        String patched = ICalWriter.patch(existing, properties,
+                faithful ? List.of("EXDATE") : Collections.emptyList());
+        write(directory, row.syncId, withReminder(patched, row), row.id, faithful);
         return true;
     }
 
@@ -176,7 +282,9 @@ public class CalendarUploader {
         return Optional.empty();
     }
 
-    private void write(String directory, String name, String ics, long rowId) throws Exception {
+    /** @param faithful whether the row now says everything about exclusions the file does,
+     *                  which is what marks it current for the download pass. */
+    private void write(String directory, String name, String ics, long rowId, boolean faithful) throws Exception {
         // The ref the write hands back is where the new ETag comes from: reading it through
         // a listing instead would walk the whole shard again, having just invalidated it.
         AppDataStore.ObjectRef stored = store.putObject(directory, name,
@@ -185,6 +293,8 @@ public class CalendarUploader {
         values.put(CalendarContract.Events._SYNC_ID, name);
         values.put(CalendarContract.Events.SYNC_DATA1, stored.etag());
         values.put(CalendarContract.Events.DIRTY, 0);
+        if (faithful)
+            values.put(CalendarContract.Events.SYNC_DATA2, CalendarMirror.FORMAT);
         provider.update(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values,
                 CalendarContract.Events._ID + "=?", new String[]{Long.toString(rowId)});
     }
@@ -225,8 +335,12 @@ public class CalendarUploader {
             lines.add(ICalWriter.timestamp("DTSTART", row.start));
             lines.add(ICalWriter.timestamp("DTEND", end));
         }
-        if (row.rrule != null)
+        if (row.rrule != null) {
             lines.add(ICalWriter.raw("RRULE", row.rrule));
+            List<Instant> excluded = Exdates.fromColumn(row.exdate);
+            if (! excluded.isEmpty())
+                lines.add(ICalWriter.exdates(excluded, row.allDay));
+        }
         lines.add(ICalWriter.timestamp("LAST-MODIFIED", System.currentTimeMillis()));
         lines.add(ICalWriter.timestamp("DTSTAMP", System.currentTimeMillis()));
         return lines;
@@ -279,6 +393,21 @@ public class CalendarUploader {
         boolean allDay;
         String rrule;
         String originalSyncId;
+        Long originalId;
+        Long originalInstanceTime;
+        int status;
+        String exdate;
+        String format;
+
+        /** One occurrence of a series, changed or deleted on its own. */
+        boolean isException() {
+            return originalSyncId != null || originalId != null;
+        }
+
+        /** Deleted occurrence: a calendar app cancels it, or deletes an exception it made. */
+        boolean cancelled() {
+            return deleted || status == CalendarContract.Events.STATUS_CANCELED;
+        }
 
         static Row from(Cursor c) {
             Row row = new Row();
@@ -295,6 +424,11 @@ public class CalendarUploader {
             row.allDay = c.getInt(10) == 1;
             row.rrule = c.isNull(11) ? null : c.getString(11);
             row.originalSyncId = c.isNull(12) ? null : c.getString(12);
+            row.originalId = c.isNull(13) ? null : c.getLong(13);
+            row.originalInstanceTime = c.isNull(14) ? null : c.getLong(14);
+            row.status = c.isNull(15) ? CalendarContract.Events.STATUS_CONFIRMED : c.getInt(15);
+            row.exdate = c.isNull(16) ? null : c.getString(16);
+            row.format = c.isNull(17) ? null : c.getString(17);
             return row;
         }
     }

@@ -72,12 +72,21 @@ public class ReminderReceiverTest {
 
     /** The account is added once: the calendar provider drops the calendars of an account it
      *  has been told is gone on a thread of its own, from the accounts as they were when it was
-     *  told, so an account removed and added again can lose a calendar made just after. */
+     *  told, so an account removed and added again can lose a calendar made just after.
+     *
+     *  An event another test class changed as an app, rather than as a sync adapter, has the
+     *  provider check its alarms five seconds later, which deletes every scheduled alert to
+     *  rebuild them from the Reminders table. The alerts these tests write have no reminder
+     *  behind them, so that check is waited out first. */
     @BeforeClass
     public static void addTheAccount() {
         account = PeergosAccount.ensure(context(), USER);
         awaitStaleAccountSweeps();
+        SystemClock.sleep(ALARM_CHECK_DELAY_MS);
     }
+
+    /** A little over CalendarProvider2's five seconds between a change and its alarm check. */
+    private static final long ALARM_CHECK_DELAY_MS = 6_000;
 
     @AfterClass
     public static void removeTheAccount() {
