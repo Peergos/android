@@ -39,8 +39,9 @@ public class CalendarMirror {
 
     /**
      * Stored in SYNC_DATA2 of every series and event row this version writes. A row without
-     * it was written before exclusions were mirrored, so its EXDATE column says nothing about
-     * the file and an upload must not write it back.
+     * it was written before exclusions, added dates, attendees, colours, availability and
+     * privacy were mirrored, so those columns say nothing about the file and an upload must
+     * not write them back.
      */
     static final String FORMAT = "2";
 
@@ -73,6 +74,7 @@ public class CalendarMirror {
     }
 
     private int runPass() throws Exception {
+        ensurePalette();
         Map<String, Long> existing = existingCalendars();
         Set<String> wanted = new HashSet<>();
         int changes = 0;
@@ -149,7 +151,8 @@ public class CalendarMirror {
      * a listing and nothing more, and in particular are never re-downloaded.
      *
      * The one exception is a row an earlier version of the mirror wrote, which
-     * {@link #FORMAT} tells apart: it has no exclusions, so it is read again once.
+     * {@link #FORMAT} tells apart: it is missing what that version did not map, so it is
+     * read again once.
      */
     private int syncEvents(long calendarId, String directory) throws Exception {
         Map<String, String> onDevice = existingEvents(calendarId);
@@ -188,6 +191,7 @@ public class CalendarMirror {
             }
             if (eventId >= 0) {
                 syncReminder(eventId, translated.get().reminderMinutes(), known);
+                syncAttendees(eventId, translated.get().attendees(), known);
                 insertOverrides(eventId, object.name, etag, translated.get().overrides());
             }
             // so a name appearing twice in one listing updates rather than inserting again
@@ -223,8 +227,55 @@ public class CalendarMirror {
             values.put(CalendarContract.Events.ORIGINAL_ID, seriesId);
             values.put(CalendarContract.Events.SYNC_DATA1, etag);
             Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values);
-            if (inserted != null)
+            if (inserted != null) {
                 syncReminder(ContentUris.parseId(inserted), override.reminderMinutes(), false);
+                syncAttendees(ContentUris.parseId(inserted), override.attendees(), false);
+            }
+        }
+    }
+
+    /** The event's attendees, rewritten wholesale like its reminder. */
+    private void syncAttendees(long eventId, List<EventTranslator.Attendee> attendees, boolean known) throws Exception {
+        if (known)
+            provider.delete(asSyncAdapter(CalendarContract.Attendees.CONTENT_URI),
+                    CalendarContract.Attendees.EVENT_ID + "=?", new String[]{Long.toString(eventId)});
+        for (EventTranslator.Attendee attendee : attendees) {
+            ContentValues values = new ContentValues();
+            values.put(CalendarContract.Attendees.EVENT_ID, eventId);
+            values.put(CalendarContract.Attendees.ATTENDEE_EMAIL, attendee.email());
+            values.put(CalendarContract.Attendees.ATTENDEE_NAME, attendee.name());
+            values.put(CalendarContract.Attendees.ATTENDEE_RELATIONSHIP, attendee.relationship());
+            values.put(CalendarContract.Attendees.ATTENDEE_TYPE, attendee.type());
+            values.put(CalendarContract.Attendees.ATTENDEE_STATUS, attendee.status());
+            provider.insert(asSyncAdapter(CalendarContract.Attendees.CONTENT_URI), values);
+        }
+    }
+
+    /**
+     * The event colours a calendar app offers for this account, which have to be listed
+     * before an event can name one by key. Only what is missing is added, so a pass costs a
+     * query once they are all there.
+     */
+    private void ensurePalette() throws Exception {
+        Set<String> listed = new HashSet<>();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Colors.CONTENT_URI),
+                new String[]{CalendarContract.Colors.COLOR_KEY},
+                CalendarContract.Colors.ACCOUNT_NAME + "=? AND " + CalendarContract.Colors.ACCOUNT_TYPE + "=? AND "
+                        + CalendarContract.Colors.COLOR_TYPE + "=?",
+                new String[]{account.name, account.type, Integer.toString(CalendarContract.Colors.TYPE_EVENT)}, null)) {
+            while (cursor != null && cursor.moveToNext())
+                listed.add(cursor.getString(0));
+        }
+        for (String key : Colours.PALETTE) {
+            if (listed.contains(key))
+                continue;
+            ContentValues values = new ContentValues();
+            values.put(CalendarContract.Colors.ACCOUNT_NAME, account.name);
+            values.put(CalendarContract.Colors.ACCOUNT_TYPE, account.type);
+            values.put(CalendarContract.Colors.COLOR_TYPE, CalendarContract.Colors.TYPE_EVENT);
+            values.put(CalendarContract.Colors.COLOR_KEY, key);
+            values.put(CalendarContract.Colors.COLOR, Colours.parse(key).orElseThrow());
+            provider.insert(asSyncAdapter(CalendarContract.Colors.CONTENT_URI), values);
         }
     }
 

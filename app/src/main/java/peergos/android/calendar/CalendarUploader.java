@@ -11,16 +11,22 @@ import android.util.Log;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;
 import peergos.server.webdav.caldav.ICal;
+import peergos.server.webdav.caldav.TimeZones;
 
 /**
  * Pushes local calendar edits back into Peergos.
@@ -59,6 +65,13 @@ public class CalendarUploader {
             CalendarContract.Events.STATUS,
             CalendarContract.Events.EXDATE,
             CalendarContract.Events.SYNC_DATA2,
+            CalendarContract.Events.EVENT_TIMEZONE,
+            CalendarContract.Events.RDATE,
+            CalendarContract.Events.EVENT_COLOR,
+            CalendarContract.Events.EVENT_COLOR_KEY,
+            CalendarContract.Events.AVAILABILITY,
+            CalendarContract.Events.ACCESS_LEVEL,
+            CalendarContract.Events.ORGANIZER,
     };
 
     private final ContentProviderClient provider;
@@ -165,16 +178,14 @@ public class CalendarUploader {
         Optional<AppDataStore.ObjectRef> remote = store.getObject(directory, series.get());
         if (remote.isPresent() && row.originalInstanceTime != null) {
             String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
-            String excluded = ICalWriter.excludeOccurrence(existing, row.originalInstanceTime);
+            String excluded = ICalWriter.excludeOccurrence(existing, row.originalInstanceTime, ZoneId.systemDefault());
             if (! excluded.equals(existing))
                 store.putObject(directory, series.get(), excluded.getBytes(StandardCharsets.UTF_8), remote);
         }
         if (! row.cancelled()) {
             String uid = UUID.randomUUID().toString();
-            List<ICalWriter.Line> properties = ours(row);
             store.putObject(directory, uid + CalendarStore.ICS_SUFFIX,
-                    withReminder(ICalWriter.create(uid, properties), row).getBytes(StandardCharsets.UTF_8),
-                    Optional.empty());
+                    fresh(uid, row, Optional.empty()).getBytes(StandardCharsets.UTF_8), Optional.empty());
         }
         purge(row.id);
         return true;
@@ -213,8 +224,7 @@ public class CalendarUploader {
 
     private boolean create(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
-        write(directory, uid + CalendarStore.ICS_SUFFIX,
-                withReminder(ICalWriter.create(uid, ours(row)), row), row.id, true);
+        write(directory, uid + CalendarStore.ICS_SUFFIX, fresh(uid, row, Optional.empty()), row.id, true);
         return true;
     }
 
@@ -223,8 +233,7 @@ public class CalendarUploader {
         if (remote.isEmpty()) {
             // Removed in Peergos while we were editing. Writing it back under the same name
             // resurrects the user's version rather than dropping their edit.
-            write(directory, row.syncId,
-                    withReminder(ICalWriter.create(uidFor(row), ours(row)), row), row.id, true);
+            write(directory, row.syncId, fresh(uidFor(row), row, Optional.empty()), row.id, true);
             return true;
         }
         if (! remote.get().etag().equals(row.etag)) {
@@ -233,14 +242,13 @@ public class CalendarUploader {
             return true;
         }
         String existing = new String(store.read(remote.get()), StandardCharsets.UTF_8);
-        // A row from before exclusions were mirrored has an EXDATE column that says nothing
-        // about the file, so the file's own are left as they are.
+        // A row from before the mirror carried everything it now does has columns that say
+        // nothing about the file, so what they would write is left as the file has it.
         boolean faithful = CalendarMirror.FORMAT.equals(row.format);
-        List<ICalWriter.Line> properties = properties(row);
-        if (! faithful)
-            properties.removeIf(line -> line.name.equals("EXDATE"));
-        String patched = ICalWriter.patch(existing, properties,
-                faithful ? List.of("EXDATE") : Collections.emptyList());
+        Changes changes = changes(row, Existing.of(existing), faithful);
+        String patched = ICalWriter.patch(existing, changes.lines, changes.removals);
+        if (changes.define.isPresent())
+            patched = ICalWriter.withTimeZone(patched, changes.define.get());
         write(directory, row.syncId, withReminder(patched, row), row.id, faithful);
         return true;
     }
@@ -248,12 +256,24 @@ public class CalendarUploader {
     /** Writes the local version as a new event, leaving the remote one alone. */
     private void duplicate(Row row, String directory) throws Exception {
         String uid = UUID.randomUUID().toString();
-        List<ICalWriter.Line> properties = ours(row);
-        properties.add(ICalWriter.text("SUMMARY", row.title + " (edited on this device)"));
         store.putObject(directory, uid + CalendarStore.ICS_SUFFIX,
-                withReminder(ICalWriter.create(uid, properties), row).getBytes(StandardCharsets.UTF_8),
+                fresh(uid, row, Optional.of(row.title + " (edited on this device)")).getBytes(StandardCharsets.UTF_8),
                 Optional.empty());
         Log.i(TAG, "Kept a conflicting local edit as " + uid);
+    }
+
+    /**
+     * A whole file for an event this device is creating, which is one this account owns.
+     * The web calendar records the same thing, and the one it replaces will not let anyone
+     * edit an entry that names nobody. An update leaves whatever owner the file already has.
+     */
+    private String fresh(String uid, Row row, Optional<String> title) throws Exception {
+        Changes changes = changes(row, Optional.empty(), true);
+        List<ICalWriter.Line> lines = new ArrayList<>(changes.lines);
+        title.ifPresent(t -> lines.add(ICalWriter.text("SUMMARY", t)));
+        lines.add(ICalWriter.text("X-OWNER", account.name));
+        String ics = withReminder(ICalWriter.create(uid, lines), row);
+        return changes.define.map(zone -> ICalWriter.withTimeZone(ics, zone)).orElse(ics);
     }
 
     /**
@@ -306,44 +326,286 @@ public class CalendarUploader {
                 : UUID.randomUUID().toString();
     }
 
-    /** Properties for an event this device is creating, which is one this account owns.
-     *  The web calendar records the same thing, and the one it replaces will not let anyone
-     *  edit an entry that names nobody. An update leaves whatever owner the file already has. */
-    private List<ICalWriter.Line> ours(Row row) {
-        List<ICalWriter.Line> lines = properties(row);
-        lines.add(ICalWriter.text("X-OWNER", account.name));
-        return lines;
+    /** What an upload writes into the file, and what it takes out. */
+    private record Changes(List<ICalWriter.Line> lines, List<String> removals, Optional<ZoneId> define) {}
+
+    /** The file as it is in Peergos, and what the download pass makes of it. */
+    private record Existing(ICal.Component event, ICal.Component vcalendar, EventTranslator.Translation mapped) {
+        static Optional<Existing> of(String ics) {
+            Optional<ICal.Component> parsed = ICal.parse(ics);
+            Optional<EventTranslator.Translation> mapped = EventTranslator.translate(ics, 0, ZoneId.systemDefault());
+            if (parsed.isEmpty() || mapped.isEmpty())
+                return Optional.empty();
+            Optional<ICal.Component> event = parsed.get().scheduleComponents().stream()
+                    .filter(c -> c.name.equals("VEVENT") && c.property("RECURRENCE-ID").isEmpty())
+                    .findFirst();
+            return event.map(e -> new Existing(e, parsed.get(), mapped.get()));
+        }
+
+        ContentValues values() {
+            return mapped.values();
+        }
     }
 
     /**
-     * The properties the platform calendar can express. DTEND is always written, even for
-     * a recurring event where the contract holds a duration instead, because the web
-     * calendar app treats an event without one as incomplete.
+     * The properties the platform calendar can express, as they now stand on the phone.
+     *
+     * Against a file that already exists, a group of them is written only if the row says
+     * something different from what the download pass reads out of the file: a field the
+     * phone did not change is left exactly as the file has it, in whatever form it is
+     * written — a Windows zone name, a floating time, an attendee's RSVP. DTEND is always
+     * written with a start, even for a recurring event where the contract holds a duration
+     * instead, because the web calendar app treats an event without one as incomplete.
      */
-    private List<ICalWriter.Line> properties(Row row) {
+    private Changes changes(Row row, Optional<Existing> existing, boolean faithful) throws Exception {
         List<ICalWriter.Line> lines = new ArrayList<>();
+        List<String> removals = new ArrayList<>();
+        Optional<ZoneId> define = Optional.empty();
+        Optional<ContentValues> before = existing.map(Existing::values);
+
         lines.add(ICalWriter.text("SUMMARY", row.title == null ? "" : row.title));
         if (row.description != null)
             lines.add(ICalWriter.text("DESCRIPTION", row.description));
         if (row.location != null)
             lines.add(ICalWriter.text("LOCATION", row.location));
-        long end = endOf(row);
-        if (row.allDay) {
-            lines.add(ICalWriter.date("DTSTART", row.start));
-            lines.add(ICalWriter.date("DTEND", Math.max(end, row.start + Duration.ofDays(1).toMillis())));
-        } else {
-            lines.add(ICalWriter.timestamp("DTSTART", row.start));
-            lines.add(ICalWriter.timestamp("DTEND", end));
+
+        ICalWriter.Form form = form(row, existing);
+        if (before.isEmpty() || ! sameTimes(row, before.get(), faithful)) {
+            long end = endOf(row);
+            if (row.allDay) {
+                lines.add(ICalWriter.date("DTSTART", row.start));
+                lines.add(ICalWriter.date("DTEND", Math.max(end, row.start + Duration.ofDays(1).toMillis())));
+            } else {
+                lines.add(form.line("DTSTART", Instant.ofEpochMilli(row.start)));
+                lines.add(form.line("DTEND", Instant.ofEpochMilli(end)));
+                if (form.tzid.isPresent() && form.tzid.get().equals(form.zone.getId()))
+                    define = Optional.of(form.zone);
+            }
+            removals.add("DURATION");
         }
-        if (row.rrule != null) {
+
+        String rruleBefore = before.map(v -> v.getAsString(CalendarContract.Events.RRULE)).orElse(null);
+        if (row.rrule != null && ! row.rrule.equals(rruleBefore))
             lines.add(ICalWriter.raw("RRULE", row.rrule));
-            List<Instant> excluded = Exdates.fromColumn(row.exdate);
-            if (! excluded.isEmpty())
-                lines.add(ICalWriter.exdates(excluded, row.allDay));
+        else if (row.rrule == null && rruleBefore != null)
+            removals.add("RRULE");
+
+        if (! faithful)
+            return new Changes(lines, removals, define);
+
+        dates("EXDATE", CalendarContract.Events.EXDATE, row.exdate, row.rrule != null || row.rdate != null,
+                Optional.empty(), before, form, lines, removals);
+        // A series of listed dates alone has its start among them on the phone; in the file
+        // DTSTART is that one already.
+        Optional<Long> start = row.rrule == null ? Optional.of(row.start) : Optional.empty();
+        dates("RDATE", CalendarContract.Events.RDATE, row.rdate, true, start, before, form, lines, removals);
+
+        int status = before.map(v -> v.getAsInteger(CalendarContract.Events.STATUS)).orElse(-1);
+        if (row.status != status)
+            lines.add(ICalWriter.raw("STATUS", status(row.status)));
+
+        int busy = row.availability == CalendarContract.Events.AVAILABILITY_FREE
+                ? CalendarContract.Events.AVAILABILITY_FREE : CalendarContract.Events.AVAILABILITY_BUSY;
+        if (before.isEmpty() || busy != before.get().getAsInteger(CalendarContract.Events.AVAILABILITY))
+            lines.add(ICalWriter.raw("TRANSP", busy == CalendarContract.Events.AVAILABILITY_FREE ? "TRANSPARENT" : "OPAQUE"));
+
+        int access = before.map(v -> v.getAsInteger(CalendarContract.Events.ACCESS_LEVEL))
+                .orElse(CalendarContract.Events.ACCESS_DEFAULT);
+        if (row.accessLevel != access) {
+            Optional<String> value = accessClass(row.accessLevel);
+            if (value.isPresent())
+                lines.add(ICalWriter.raw("CLASS", value.get()));
+            else
+                removals.add("CLASS");
         }
+
+        Integer colour = row.colourKey != null ? Colours.parse(row.colourKey).orElse(row.colour) : row.colour;
+        Integer colourBefore = before.map(v -> v.getAsInteger(CalendarContract.Events.EVENT_COLOR)).orElse(null);
+        if (! java.util.Objects.equals(colour, colourBefore)) {
+            if (colour == null)
+                removals.add("COLOR");
+            else
+                lines.add(ICalWriter.raw("COLOR", row.colourKey != null ? row.colourKey : Colours.nameOf(colour)));
+        }
+
+        List<EventTranslator.Attendee> attendees = attendeesOf(row.id);
+        List<EventTranslator.Attendee> attendeesBefore = existing.map(e -> e.mapped().attendees()).orElse(List.of());
+        if (! sameAttendees(attendees, attendeesBefore)) {
+            if (attendees.isEmpty())
+                removals.add("ATTENDEE");
+            for (EventTranslator.Attendee attendee : attendees)
+                lines.add(attendeeLine(attendee, existing.map(Existing::event)));
+        }
+        // An organiser is only ever named for an event made here, and only if the phone has
+        // an address for it: the provider fills in the calendar's owner, a Peergos username.
+        if (existing.isEmpty() && ! attendees.isEmpty() && row.organizer != null && row.organizer.contains("@"))
+            lines.add(ICalWriter.raw("ORGANIZER", "mailto:" + row.organizer));
+
         lines.add(ICalWriter.timestamp("LAST-MODIFIED", System.currentTimeMillis()));
         lines.add(ICalWriter.timestamp("DTSTAMP", System.currentTimeMillis()));
-        return lines;
+        return new Changes(lines, removals, define);
+    }
+
+    /**
+     * How the row's times are written. All-day is a date and UTC is UTC. Otherwise the
+     * file's own form is kept if it reads as the same zone — its TZID, even one only its
+     * VTIMEZONE defines, or a floating time read in the phone's zone — and a zone it does
+     * not name is written as its IANA name.
+     */
+    private static ICalWriter.Form form(Row row, Optional<Existing> existing) {
+        if (row.allDay)
+            return ICalWriter.Form.date();
+        ZoneId zone = zoneOf(row.timezone);
+        if (zone.normalized().equals(ZoneOffset.UTC))
+            return ICalWriter.Form.utc();
+        if (existing.isPresent()) {
+            Optional<ICal.Property> start = existing.get().event().property("DTSTART");
+            if (start.isPresent()) {
+                ICalWriter.Form current = ICalWriter.Form.of(start.get(), TimeZones.of(existing.get().vcalendar()),
+                        ZoneId.systemDefault());
+                if (! current.date && ! current.isUtc() && current.zone.getId().equals(zone.getId()))
+                    return current;
+            }
+        }
+        return ICalWriter.Form.zoned(zone.getId(), zone);
+    }
+
+    private static ZoneId zoneOf(String timezone) {
+        try {
+            return timezone == null ? ZoneOffset.UTC : ZoneId.of(timezone);
+        } catch (RuntimeException e) {
+            return ZoneOffset.UTC;
+        }
+    }
+
+    /** Whether the row is at the same times the file is, in the same zone. A row written
+     *  before zones were mirrored kept a zone that says nothing, so only its times count. */
+    private static boolean sameTimes(Row row, ContentValues before, boolean faithful) {
+        Long start = before.getAsLong(CalendarContract.Events.DTSTART);
+        boolean allDay = before.getAsInteger(CalendarContract.Events.ALL_DAY) == 1;
+        if (start == null || start != row.start || allDay != row.allDay || endOf(before) != endOf(row))
+            return false;
+        return ! faithful || row.allDay
+                || zoneOf(row.timezone).getId().equals(zoneOf(before.getAsString(CalendarContract.Events.EVENT_TIMEZONE)).getId());
+    }
+
+    private static long endOf(ContentValues values) {
+        Long end = values.getAsLong(CalendarContract.Events.DTEND);
+        if (end != null)
+            return end;
+        long start = values.getAsLong(CalendarContract.Events.DTSTART);
+        return start + Optional.ofNullable(values.getAsString(CalendarContract.Events.DURATION))
+                .flatMap(ICal::parseDuration).map(Duration::toMillis).orElse(0L);
+    }
+
+    /** EXDATE or RDATE: written in the start's form if they differ from the file's, and taken
+     *  out if the row has none. */
+    private static void dates(String name, String column, String value, boolean recurring, Optional<Long> start,
+                              Optional<ContentValues> before, ICalWriter.Form form, List<ICalWriter.Line> lines,
+                              List<String> removals) {
+        List<Instant> now = new ArrayList<>(recurring ? Exdates.fromColumn(value) : List.of());
+        start.ifPresent(s -> now.remove(Instant.ofEpochMilli(s)));
+        List<Instant> was = new ArrayList<>(before.map(v -> Exdates.fromColumn(v.getAsString(column))).orElse(List.of()));
+        start.ifPresent(s -> was.remove(Instant.ofEpochMilli(s)));
+        if (new HashSet<>(now).equals(new HashSet<>(was)))
+            return;
+        if (now.isEmpty())
+            removals.add(name);
+        else
+            lines.add(form.list(name, now));
+    }
+
+    private static String status(int status) {
+        if (status == CalendarContract.Events.STATUS_CANCELED)
+            return "CANCELLED";
+        return status == CalendarContract.Events.STATUS_TENTATIVE ? "TENTATIVE" : "CONFIRMED";
+    }
+
+    private static Optional<String> accessClass(int accessLevel) {
+        switch (accessLevel) {
+            case CalendarContract.Events.ACCESS_PUBLIC: return Optional.of("PUBLIC");
+            case CalendarContract.Events.ACCESS_PRIVATE: return Optional.of("PRIVATE");
+            case CalendarContract.Events.ACCESS_CONFIDENTIAL: return Optional.of("CONFIDENTIAL");
+            default: return Optional.empty();
+        }
+    }
+
+    /** The same people, named the same, in the same roles and with the same answers. */
+    private static boolean sameAttendees(List<EventTranslator.Attendee> a, List<EventTranslator.Attendee> b) {
+        return new HashSet<>(comparable(a)).equals(new HashSet<>(comparable(b)));
+    }
+
+    private static List<List<Object>> comparable(List<EventTranslator.Attendee> attendees) {
+        List<List<Object>> out = new ArrayList<>();
+        for (EventTranslator.Attendee a : attendees)
+            out.add(java.util.Arrays.asList(a.email().toLowerCase(Locale.ROOT), a.name() == null || a.name().isEmpty() ? null : a.name(),
+                    a.type(), a.status() == CalendarContract.Attendees.ATTENDEE_STATUS_NONE
+                            ? CalendarContract.Attendees.ATTENDEE_STATUS_INVITED : a.status()));
+        return out;
+    }
+
+    /**
+     * One ATTENDEE line. Someone the file already lists keeps their line's parameters,
+     * RSVP and delegation among them, with only what the phone changed replaced.
+     */
+    static ICalWriter.Line attendeeLine(EventTranslator.Attendee attendee, Optional<ICal.Component> event) {
+        Optional<ICal.Property> listed = event.flatMap(e -> e.properties.stream()
+                .filter(p -> p.name.equals("ATTENDEE") && EventTranslator.email(p).equalsIgnoreCase(attendee.email()))
+                .findFirst());
+        Map<String, String> params = new LinkedHashMap<>(listed.map(p -> p.params).orElse(Map.of()));
+        String name = attendee.name() == null || attendee.name().isEmpty() ? null : attendee.name();
+        if (! java.util.Objects.equals(params.get("CN"), name)) {
+            if (name == null)
+                params.remove("CN");
+            else
+                params.put("CN", name);
+        }
+        if (listed.isEmpty() || EventTranslator.attendeeType(listed.get()) != attendee.type()) {
+            if (attendee.type() == CalendarContract.Attendees.TYPE_RESOURCE) {
+                params.put("CUTYPE", "RESOURCE");
+            } else {
+                if ("RESOURCE".equalsIgnoreCase(params.get("CUTYPE")) || "ROOM".equalsIgnoreCase(params.get("CUTYPE")))
+                    params.put("CUTYPE", "INDIVIDUAL");
+                params.put("ROLE", attendee.type() == CalendarContract.Attendees.TYPE_OPTIONAL ? "OPT-PARTICIPANT"
+                        : attendee.type() == CalendarContract.Attendees.TYPE_NONE ? "NON-PARTICIPANT" : "REQ-PARTICIPANT");
+            }
+        }
+        if (listed.isEmpty() || EventTranslator.attendeeStatus(listed.get()) != attendee.status())
+            params.put("PARTSTAT", partstat(attendee.status()));
+        StringBuilder rest = new StringBuilder();
+        for (Map.Entry<String, String> param : params.entrySet())
+            rest.append(';').append(param.getKey()).append('=').append(ICalWriter.paramValue(param.getValue()));
+        rest.append(':').append(listed.map(p -> p.value).orElse("mailto:" + attendee.email()));
+        return new ICalWriter.Line("ATTENDEE", rest.toString());
+    }
+
+    private static String partstat(int status) {
+        switch (status) {
+            case CalendarContract.Attendees.ATTENDEE_STATUS_ACCEPTED: return "ACCEPTED";
+            case CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED: return "DECLINED";
+            case CalendarContract.Attendees.ATTENDEE_STATUS_TENTATIVE: return "TENTATIVE";
+            default: return "NEEDS-ACTION";
+        }
+    }
+
+    /** The people the phone has on this event, those with an address to write: a calendar
+     *  app lists the organiser by the calendar's owner, which is a username, not an address. */
+    private List<EventTranslator.Attendee> attendeesOf(long rowId) throws Exception {
+        List<EventTranslator.Attendee> out = new ArrayList<>();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Attendees.CONTENT_URI),
+                new String[]{CalendarContract.Attendees.ATTENDEE_EMAIL, CalendarContract.Attendees.ATTENDEE_NAME,
+                        CalendarContract.Attendees.ATTENDEE_RELATIONSHIP, CalendarContract.Attendees.ATTENDEE_TYPE,
+                        CalendarContract.Attendees.ATTENDEE_STATUS},
+                CalendarContract.Attendees.EVENT_ID + "=?", new String[]{Long.toString(rowId)}, null)) {
+            while (cursor != null && cursor.moveToNext()) {
+                String email = cursor.isNull(0) ? "" : cursor.getString(0);
+                if (! email.contains("@"))
+                    continue;
+                out.add(new EventTranslator.Attendee(email, cursor.isNull(1) ? null : cursor.getString(1),
+                        cursor.getInt(2), cursor.getInt(3), cursor.getInt(4)));
+            }
+        }
+        return out;
     }
 
     private static long endOf(Row row) {
@@ -398,6 +660,13 @@ public class CalendarUploader {
         int status;
         String exdate;
         String format;
+        String timezone;
+        String rdate;
+        Integer colour;
+        String colourKey;
+        int availability;
+        int accessLevel;
+        String organizer;
 
         /** One occurrence of a series, changed or deleted on its own. */
         boolean isException() {
@@ -429,6 +698,13 @@ public class CalendarUploader {
             row.status = c.isNull(15) ? CalendarContract.Events.STATUS_CONFIRMED : c.getInt(15);
             row.exdate = c.isNull(16) ? null : c.getString(16);
             row.format = c.isNull(17) ? null : c.getString(17);
+            row.timezone = c.isNull(18) ? null : c.getString(18);
+            row.rdate = c.isNull(19) ? null : c.getString(19);
+            row.colour = c.isNull(20) ? null : c.getInt(20);
+            row.colourKey = c.isNull(21) ? null : c.getString(21);
+            row.availability = c.isNull(22) ? CalendarContract.Events.AVAILABILITY_BUSY : c.getInt(22);
+            row.accessLevel = c.isNull(23) ? CalendarContract.Events.ACCESS_DEFAULT : c.getInt(23);
+            row.organizer = c.isNull(24) ? null : c.getString(24);
             return row;
         }
     }

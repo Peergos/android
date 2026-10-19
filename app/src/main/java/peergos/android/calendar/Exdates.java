@@ -13,10 +13,11 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import peergos.server.webdav.caldav.ICal;
+import peergos.server.webdav.caldav.TimeZones;
 
 /**
- * The occurrences a series leaves out, in the two forms they take: EXDATE lines in a file,
- * and the contract's EXDATE column.
+ * The occurrences a series leaves out, or adds, in the two forms they take: EXDATE and RDATE
+ * lines in a file, and the contract's EXDATE and RDATE columns, which share one format.
  *
  * Peergos has no exception rows. The web app changes one occurrence by excluding it from
  * the series and saving the new version as an event of its own, so an exclusion is the
@@ -34,23 +35,31 @@ final class Exdates {
 
     private Exdates() {}
 
-    /** Every occurrence an event excludes, across however many EXDATE lines it has. */
-    static List<Instant> of(ICal.Component event) {
+    /**
+     * Every occurrence an event lists under this property, EXDATE or RDATE, across however
+     * many lines it has, read the way the event's own times are read.
+     */
+    static List<Instant> of(ICal.Component event, String property, TimeZones zones, ZoneId floating) {
         List<Instant> out = new ArrayList<>();
-        for (ICal.Property exdate : event.properties) {
-            if (exdate.name.equals("EXDATE"))
-                out.addAll(values(exdate));
+        for (ICal.Property line : event.properties) {
+            if (line.name.equals(property))
+                out.addAll(values(line, zones, floating));
         }
         return out;
     }
 
-    /** The instants one EXDATE line names; a line may list several, comma separated. */
-    static List<Instant> values(ICal.Property exdate) {
+    /** The instants one line names; a line may list several, comma separated, and an RDATE
+     *  may give a period, of which the start is the occurrence. */
+    static List<Instant> values(ICal.Property line, TimeZones zones, ZoneId floating) {
         List<Instant> out = new ArrayList<>();
-        for (String value : exdate.value.split(",")) {
-            if (value.isBlank())
+        for (String value : line.value.split(",")) {
+            String v = value.trim();
+            int slash = v.indexOf('/');
+            if (slash >= 0)
+                v = v.substring(0, slash);
+            if (v.isEmpty())
                 continue;
-            ICal.toInstant(new ICal.Property(exdate.name, exdate.params, value.trim())).ifPresent(out::add);
+            ICal.toInstant(new ICal.Property(line.name, line.params, v), zones, floating).ifPresent(out::add);
         }
         return out;
     }
@@ -87,35 +96,6 @@ final class Exdates {
             }
         }
         return out;
-    }
-
-    /**
-     * An EXDATE line for these occurrences of an event starting at {@code dtstart}, in the
-     * same form as that start: RFC 5545 has an EXDATE take the value type of the DTSTART it
-     * excludes from, and the web app reads one back through the start's zone.
-     */
-    static String line(ICal.Property dtstart, List<Instant> instants) {
-        boolean date = dtstart.param("VALUE").map(v -> v.equalsIgnoreCase("DATE")).orElse(false)
-                || dtstart.value.trim().length() == 8;
-        Optional<String> tzid = dtstart.param("TZID").filter(z -> zoneOf(z).isPresent());
-        boolean utc = dtstart.value.trim().endsWith("Z");
-        String params;
-        DateTimeFormatter format;
-        if (date) {
-            params = ";VALUE=DATE";
-            format = DATE.withZone(ZoneOffset.UTC);
-        } else if (tzid.isPresent() && ! utc) {
-            params = ";TZID=" + tzid.get();
-            format = LOCAL_STAMP.withZone(ZoneId.of(tzid.get()));
-        } else if (utc) {
-            params = "";
-            format = UTC_STAMP;
-        } else {
-            // floating, which the parser reads as UTC
-            params = "";
-            format = LOCAL_STAMP.withZone(ZoneOffset.UTC);
-        }
-        return "EXDATE" + params + ":" + instants.stream().map(format::format).collect(Collectors.joining(","));
     }
 
     private static Optional<Instant> parse(String value, ZoneId zone) {
