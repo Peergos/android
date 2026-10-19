@@ -447,17 +447,15 @@ public class CalendarUploader {
     }
 
     /**
-     * How the row's times are written. All-day is a date and UTC is UTC. Otherwise the
-     * file's own form is kept if it reads as the same zone — its TZID, even one only its
-     * VTIMEZONE defines, or a floating time read in the phone's zone — and a zone it does
-     * not name is written as its IANA name.
+     * How the row's times are written. All-day is a date. Otherwise the file's own form is
+     * kept if it reads as the same zone — its TZID, even one only its VTIMEZONE defines, or
+     * a floating time read in the phone's zone, which may be UTC — then UTC is UTC, and a
+     * zone it does not name is written as its IANA name.
      */
     private static ICalWriter.Form form(Row row, Optional<Existing> existing) {
         if (row.allDay)
             return ICalWriter.Form.date();
         ZoneId zone = zoneOf(row.timezone);
-        if (zone.normalized().equals(ZoneOffset.UTC))
-            return ICalWriter.Form.utc();
         if (existing.isPresent()) {
             Optional<ICal.Property> start = existing.get().event().property("DTSTART");
             if (start.isPresent()) {
@@ -467,6 +465,8 @@ public class CalendarUploader {
                     return current;
             }
         }
+        if (zone.normalized().equals(ZoneOffset.UTC))
+            return ICalWriter.Form.utc();
         return ICalWriter.Form.zoned(zone.getId(), zone);
     }
 
