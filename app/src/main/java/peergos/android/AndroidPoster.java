@@ -19,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ForkJoinPool;
 import java.util.zip.GZIPInputStream;
 
@@ -26,6 +28,14 @@ import peergos.shared.user.HttpPoster;
 import peergos.shared.util.Serialize;
 
 public class AndroidPoster implements HttpPoster {
+    /** Callers cap how many puts they have in flight, and that cap only means anything if a put
+     *  returns before its upload is done. */
+    private static final ExecutorService PUTS = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "AndroidPoster put");
+        t.setDaemon(true);
+        return t;
+    });
+
     private final URL dht;
     private final boolean useGet;
     private final Optional<String> basicAuth;
@@ -152,6 +162,23 @@ public class AndroidPoster implements HttpPoster {
 
     @Override
     public CompletableFuture<byte[]> put(String url, byte[] body, Map<String, String> headers) {
+        CompletableFuture<byte[]> res = new CompletableFuture<>();
+        PUTS.execute(() -> {
+            try {
+                putSync(url, body, headers).whenComplete((r, t) -> {
+                    if (t != null)
+                        res.completeExceptionally(t);
+                    else
+                        res.complete(r);
+                });
+            } catch (Throwable t) {
+                res.completeExceptionally(t);
+            }
+        });
+        return res;
+    }
+
+    private CompletableFuture<byte[]> putSync(String url, byte[] body, Map<String, String> headers) {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) buildURL(url).openConnection();
