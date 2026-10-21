@@ -21,17 +21,17 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ForkJoinPool;
+import java.util.function.Supplier;
 import java.util.zip.GZIPInputStream;
 
 import peergos.shared.user.HttpPoster;
 import peergos.shared.util.Serialize;
 
 public class AndroidPoster implements HttpPoster {
-    /** Callers cap how many puts they have in flight, and that cap only means anything if a put
-     *  returns before its upload is done. */
-    private static final ExecutorService PUTS = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "AndroidPoster put");
+    /** Callers cap how many requests they have in flight, and that cap only means anything if a
+     *  request returns before it is done. */
+    private static final ExecutorService REQUESTS = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "AndroidPoster");
         t.setDaemon(true);
         return t;
     });
@@ -89,6 +89,10 @@ public class AndroidPoster implements HttpPoster {
     }
 
     private CompletableFuture<byte[]> post(String url, byte[] payload, boolean unzip, Map<String, String> headers, int timeoutMillis) {
+        return async(() -> postSync(url, payload, unzip, headers, timeoutMillis));
+    }
+
+    private CompletableFuture<byte[]> postSync(String url, byte[] payload, boolean unzip, Map<String, String> headers, int timeoutMillis) {
         HttpURLConnection conn = null;
         CompletableFuture<byte[]> res = new CompletableFuture<>();
         try
@@ -162,10 +166,15 @@ public class AndroidPoster implements HttpPoster {
 
     @Override
     public CompletableFuture<byte[]> put(String url, byte[] body, Map<String, String> headers) {
+        return async(() -> putSync(url, body, headers));
+    }
+
+    /** Runs a blocking request on the request pool. */
+    private static CompletableFuture<byte[]> async(Supplier<CompletableFuture<byte[]>> request) {
         CompletableFuture<byte[]> res = new CompletableFuture<>();
-        PUTS.execute(() -> {
+        REQUESTS.execute(() -> {
             try {
-                putSync(url, body, headers).whenComplete((r, t) -> {
+                request.get().whenComplete((r, t) -> {
                     if (t != null)
                         res.completeExceptionally(t);
                     else
@@ -262,7 +271,7 @@ public class AndroidPoster implements HttpPoster {
                 if (conn != null)
                     conn.disconnect();
             }
-        }, ForkJoinPool.commonPool());
+        }, REQUESTS);
     }
 
     @Override
