@@ -12,8 +12,8 @@ android {
         applicationId = "peergos.android"
         minSdk = 30
         targetSdk = 37
-        versionCode = 85
-        versionName = "1.39.0"
+        versionCode = 86
+        versionName = "1.40.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
