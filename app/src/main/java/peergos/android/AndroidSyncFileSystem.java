@@ -180,7 +180,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (srcFile.isEmpty())
             throw new IllegalStateException("Local file doesn't exist: " + src);
         if (Objects.equals(src.getParent(), dest.getParent())) {
-            srcFile.get().renameTo(dest.getFileName().toString());
+            rename(srcFile.get(), dest.getFileName().toString());
         } else {
             try {
                 AsyncReader reader = getBytes(src, 0);
@@ -190,6 +190,16 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
+        }
+    }
+
+    /** A file found from its path is a single document, which DocumentFile can't rename, but its provider can */
+    private void rename(DocumentFile f, String name) {
+        try {
+            if (DocumentsContract.renameDocument(context.getContentResolver(), f.getUri(), name) == null)
+                throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
+        } catch (FileNotFoundException e) {
+            throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name, e);
         }
     }
 
@@ -367,7 +377,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         } else {
             DocumentFile placed = DocumentFile.fromSingleUri(context, moved);
             if (placed != null && ! name.equals(placed.getName()))
-                placed.renameTo(name);
+                rename(placed, name);
         }
         discardCopy(p);
     }
