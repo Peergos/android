@@ -56,14 +56,18 @@ public class TestDocumentsProvider extends ContentProvider {
     private static final String METHOD_CREATE_DOCUMENT = "android:createDocument";
     private static final String METHOD_DELETE_DOCUMENT = "android:deleteDocument";
     private static final String METHOD_RENAME_DOCUMENT = "android:renameDocument";
+    private static final String METHOD_MOVE_DOCUMENT = "android:moveDocument";
     private static final String EXTRA_URI = "uri";
+    private static final String EXTRA_TARGET_URI = "android.content.extra.TARGET_URI";
 
     /** Test-only: wipe the root and (optionally) seed it with N random files
      *  in the provider's own process. extras: count (int), seedLow (long, low
-     *  32 bits of the seed), minSize (long), maxSize (long). */
+     *  32 bits of the seed), minSize (long), maxSize (long), and moveSupported (boolean, default true), as not
+     *  every provider can move documents. */
     public static final String METHOD_RESET_AND_SEED = "test:resetAndSeed";
 
     private File rootDir;
+    private volatile boolean moveSupported = true;
 
     @Override
     public boolean onCreate() {
@@ -166,7 +170,21 @@ public class TestDocumentsProvider extends ContentProvider {
                         DocumentsContract.buildDocumentUriUsingTree(docUri, newId));
                 return out;
             }
+            if (METHOD_MOVE_DOCUMENT.equals(method)) {
+                if (! moveSupported)
+                    throw new UnsupportedOperationException("Move not supported");
+                Uri docUri = extras.getParcelable(EXTRA_URI);
+                Uri targetUri = extras.getParcelable(EXTRA_TARGET_URI);
+                File src = fileFor(DocumentsContract.getDocumentId(docUri));
+                File dst = new File(fileFor(DocumentsContract.getDocumentId(targetUri)), src.getName());
+                if (dst.exists() || ! src.renameTo(dst))
+                    throw new IOException("move failed: " + src + " -> " + dst);
+                Bundle out = new Bundle();
+                out.putParcelable(EXTRA_URI, DocumentsContract.buildDocumentUriUsingTree(docUri, docIdFor(dst)));
+                return out;
+            }
             if (METHOD_RESET_AND_SEED.equals(method)) {
+                moveSupported = extras.getBoolean("moveSupported", true);
                 int count = extras.getInt("count");
                 long seed = extras.getLong("seed");
                 long minSize = extras.getLong("minSize");
@@ -258,6 +276,8 @@ public class TestDocumentsProvider extends ContentProvider {
             flags |= DocumentsContract.Document.FLAG_SUPPORTS_WRITE;
         flags |= DocumentsContract.Document.FLAG_SUPPORTS_DELETE
                 | DocumentsContract.Document.FLAG_SUPPORTS_RENAME;
+        if (moveSupported)
+            flags |= DocumentsContract.Document.FLAG_SUPPORTS_MOVE;
 
         MatrixCursor.RowBuilder row = c.newRow();
         row.add(DocumentsContract.Document.COLUMN_DOCUMENT_ID, docId);
