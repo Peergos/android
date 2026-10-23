@@ -91,6 +91,14 @@ public class AndroidRenameTest {
         Assert.assertEquals(Map.of("d", "dir", "d/b", "contents"), tree(device));
     }
 
+    /** A move to the top of the synced folder made its parent folder, which there is null */
+    @Test
+    public void moveIntoTheTopFolder() throws Exception {
+        write("d/a", "contents");
+        device.moveTo(Paths.get("d/a"), Paths.get("a"));
+        Assert.assertEquals(Map.of("d", "dir", "a", "contents"), tree(device));
+    }
+
     @Test
     public void renameOnTheOtherSideIsFollowed() throws Exception {
         SyncState state = new JdbcTreeState(":memory:");

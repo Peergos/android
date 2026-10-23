@@ -145,7 +145,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
 
     @Override
     public synchronized void mkdirs(Path p) {
-        if (p.getNameCount() == 0 || p.toString().isEmpty()) // base dir
+        if (p == null || p.getNameCount() == 0 || p.toString().isEmpty()) // base dir
             return;
         Path parent = p.getParent();
         if (! exists(parent))
