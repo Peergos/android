@@ -37,6 +37,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import peergos.server.sync.LocalFileSystem;
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
 import peergos.shared.Crypto;
@@ -154,6 +155,16 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             if (subDir == null)
                 parentDir.createDirectory(ourName);
         }
+    }
+
+    @Override
+    public boolean canCreate(Path p) {
+        for (Path dir = p.getParent(); dir != null && ! dir.toString().isEmpty(); dir = dir.getParent()) {
+            Optional<DocumentFile> f = getByPath(dir);
+            if (f.isPresent() && f.get().exists())
+                return f.get().isDirectory();
+        }
+        return true;
     }
 
     @Override
@@ -293,6 +304,91 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
             lastModified = existing.lastModified() / 1000 * 1000;
         }
         return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
+    }
+
+    @Override
+    public boolean showsPartialCopies() {
+        return false;
+    }
+
+    /** Each copy gets a folder of its own, holding a file with the target's name, so it can be moved into place */
+    private Path partialCopyDir(Path p) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(p.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : hash)
+                hex.append(String.format("%02x", b));
+            return Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR, hex.toString());
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public Path partialCopy(Path p) throws IOException {
+        Path dir = partialCopyDir(p);
+        Path partial = dir.resolve(p.getFileName().toString());
+        if (exists(partial))
+            return partial;
+        Optional<DocumentFile> target = getByPath(p);
+        if (target.isEmpty() || ! target.get().exists() || ! target.get().isFile()) {
+            // the first write creates it
+            mkdirs(dir);
+            return partial;
+        }
+        // copied into another folder first, so a copy cut short isn't taken for the start of the download. Renaming
+        // a file could change its extension to suit its type, but a folder's name is left alone.
+        Path tmpDir = Paths.get(dir + ".tmp");
+        delete(dir);
+        delete(tmpDir);
+        try (AsyncReader reader = getBytes(p, 0)) {
+            setBytes(tmpDir.resolve(p.getFileName().toString()), 0, reader, target.get().length(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), ResumeUploadProps.random(crypto), () -> false, x -> {});
+        }
+        DocumentFile copied = getByPath(tmpDir).orElseThrow(() -> new FileNotFoundException("Couldn't copy " + p));
+        if (! copied.renameTo(dir.getFileName().toString()))
+            throw new IOException("Couldn't move the copy of " + p + " into place");
+        return partial;
+    }
+
+    @Override
+    public void completeCopy(Path p) throws IOException {
+        Path dir = partialCopyDir(p);
+        String name = p.getFileName().toString();
+        DocumentFile partial = getByPath(dir.resolve(name)).orElseThrow(() -> new FileNotFoundException("No copy of " + p));
+        DocumentFile partialDir = getByPath(dir).orElseThrow(() -> new FileNotFoundException("No copy of " + p));
+        Path parentPath = p.getParent() == null ? Paths.get("") : p.getParent();
+        mkdirs(parentPath);
+        DocumentFile parent = getByPath(parentPath).orElseThrow(() -> new IllegalStateException("Absent dir: " + parentPath));
+        // there is no replacing move, but a download missing its target is downloaded again, as its source changed
+        delete(p);
+        Uri moved = null;
+        try {
+            moved = DocumentsContract.moveDocument(context.getContentResolver(), partial.getUri(), partialDir.getUri(), parent.getUri());
+        } catch (Exception e) {
+            // not every provider can move documents
+        }
+        if (moved == null) {
+            try (AsyncReader reader = getBytes(dir.resolve(name), 0)) {
+                setBytes(p, 0, reader, partial.length(), Optional.empty(), Optional.empty(), Optional.empty(),
+                        ResumeUploadProps.random(crypto), () -> false, x -> {});
+            }
+        } else {
+            DocumentFile placed = DocumentFile.fromSingleUri(context, moved);
+            if (placed != null && ! name.equals(placed.getName()))
+                placed.renameTo(name);
+        }
+        discardCopy(p);
+    }
+
+    @Override
+    public void discardCopy(Path p) {
+        delete(partialCopyDir(p));
+    }
+
+    @Override
+    public void discardCopies() {
+        delete(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR));
     }
 
     private InputStream getInputStream(DocumentFile file) {
@@ -457,6 +553,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     private void filesCountRecurse(Path p, DocumentFile dir, AtomicLong count) {
         DocumentFile[] kids = dir.listFiles();
         Arrays.stream(kids).parallel().forEach(kid -> {
+            if (isPartialCopies(p, kid))
+                return;
             if (kid.isFile()) {
                 count.incrementAndGet();
             } else {
@@ -474,6 +572,10 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         return Optional.empty();
     }
 
+    private static boolean isPartialCopies(Path dir, DocumentFile kid) {
+        return dir.toString().isEmpty() && LocalFileSystem.PARTIAL_COPIES_DIR.equals(kid.getName());
+    }
+
     public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) {
         DocumentFile[] kids = dir.listFiles();
         // Sequential during the first sync for this pair — parallel siblings race on
@@ -483,6 +585,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
                 ? Arrays.stream(kids).parallel()
                 : Arrays.stream(kids);
         stream.forEach(kid -> {
+            if (isPartialCopies(p, kid))
+                return;
             FileProps props = new FileProps(p.resolve(kid.getName()).toString(), kid.lastModified() / 1000 * 1000, kid.length(), Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
