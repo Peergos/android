@@ -38,6 +38,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import peergos.server.sync.LocalFileSystem;
+import peergos.server.sync.StagedFileSystem;
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
 import peergos.shared.Crypto;
@@ -50,9 +51,10 @@ import peergos.shared.user.fs.HashTree;
 import peergos.shared.user.fs.MimeTypes;
 import peergos.shared.user.fs.ResumeUploadProps;
 import peergos.shared.user.fs.Thumbnail;
+import peergos.shared.util.Pair;
 import peergos.shared.util.Triple;
 
-public class AndroidSyncFileSystem implements SyncFilesystem {
+public class AndroidSyncFileSystem extends StagedFileSystem {
     private final Uri rootUri;
     private final Context context;
     private final Crypto crypto;
@@ -170,13 +172,6 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     @Override
     public void delete(Path p) {
         getByPath(p).ifPresent(DocumentFile::delete);
-    }
-
-    @Override
-    public void bulkDelete(Path p, Set<String> children) {
-        for (String child : children) {
-            getByPath(p.resolve(child)).ifPresent(DocumentFile::delete);
-        }
     }
 
     @Override
@@ -306,11 +301,6 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
         return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
     }
 
-    @Override
-    public boolean showsPartialCopies() {
-        return false;
-    }
-
     /** Each copy gets a folder of its own, holding a file with the target's name, so it can be moved into place */
     private Path partialCopyDir(Path p) {
         try {
@@ -325,7 +315,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public Path partialCopy(Path p) throws IOException {
+    protected Path partialCopy(Path p) throws IOException {
         Path dir = partialCopyDir(p);
         Path partial = dir.resolve(p.getFileName().toString());
         if (exists(partial))
@@ -352,7 +342,8 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public void completeCopy(Path p) throws IOException {
+    protected void completeCopy(Path p, List<Pair<Long, Long>> ranges, long size) throws IOException {
+        // the copy is of all of the file, cut to size as it was written
         Path dir = partialCopyDir(p);
         String name = p.getFileName().toString();
         DocumentFile partial = getByPath(dir.resolve(name)).orElseThrow(() -> new FileNotFoundException("No copy of " + p));
@@ -382,7 +373,7 @@ public class AndroidSyncFileSystem implements SyncFilesystem {
     }
 
     @Override
-    public void discardCopy(Path p) {
+    protected void discardCopy(Path p) {
         delete(partialCopyDir(p));
     }
 
