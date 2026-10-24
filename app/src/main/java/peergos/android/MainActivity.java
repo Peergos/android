@@ -68,6 +68,7 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.splashscreen.SplashScreen;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -185,6 +186,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_ENTRY_AT = "entryAt";
     /** Set once the page has been asked for, after which a link reaches it as a fragment change. */
     private boolean pageRequested = false;
+    /** Set once the page has drawn something, or could not: the splash comes down then. */
+    private volatile boolean firstPageShown = false;
     public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
     public static final String SYNC_CHANNEL_ID = "sync-progress";
     public static final int SYNC_NOTIFICATION_ID = 77;
@@ -526,7 +529,12 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // The system's splash, kept up until the page has drawn: in between there was a dialog
+        // over an empty view while the server started, then a blank page while the bundles
+        // loaded, three screens before the first one that meant anything.
+        SplashScreen splash = SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
+        splash.setKeepOnScreenCondition(() -> ! firstPageShown);
         System.out.println("Peergos v1");
         AppLifecycleObserver appLifecycleObserver = new AppLifecycleObserver();
         ProcessLifecycleOwner.get().getLifecycle().addObserver(appLifecycleObserver);
@@ -565,7 +573,6 @@ public class MainActivity extends AppCompatActivity {
         progressDialog = new ProgressDialog(MainActivity.this);
         progressDialog.setCancelable(true);
         progressDialog.setMessage("Loading Peergos...");
-        progressDialog.show();
 
         webView = findViewById(R.id.webView);
 
@@ -617,7 +624,7 @@ public class MainActivity extends AppCompatActivity {
             LocalApiAuth auth = localAuth;
             MainActivity.this.runOnUiThread(() -> {
                 if (auth == null) {
-                    progressDialog.hide();
+                    firstPageShown = true;
                     Toast.makeText(this, "Another app is using port " + PORT + ", which Peergos needs", Toast.LENGTH_LONG).show();
                     return;
                 }
@@ -625,7 +632,6 @@ public class MainActivity extends AppCompatActivity {
                 // starting arrived through onNewIntent in the meantime
                 webView.loadUrl(auth.launchUrl(PORT) + linkFragment(getIntent()));
                 pageRequested = true;
-                progressDialog.hide();
             });
             // null means another instance already started the server, and it runs its own
             // schedule. Dispatching anyway threw from the method reference's null check,
@@ -668,6 +674,12 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             System.out.println("WebViewClient url loaded " + request.getUrl().toString());
+            if ("peergos-app".equals(request.getUrl().getScheme())) {
+                // the error page's retry: a fresh launch code, the last one being spent
+                if ("retry".equals(request.getUrl().getHost()) && localAuth != null)
+                    webView.loadUrl(localAuth.launchUrl(PORT));
+                return true;
+            }
             String encodedPath = request.getUrl().getEncodedPath();
             boolean isDownload = encodedPath != null && encodedPath.startsWith("/" + Constants.ANDROID_FILE_REFLECTOR);
             if (isDownload) {
@@ -692,21 +704,21 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
-//            super.onPageStarted(view, url, favicon);
-            //showing the progress bar once the page has started loading
-            progressDialog.show();
+            // the first page loads behind the splash; a later one gets the dialog
+            if (firstPageShown)
+                progressDialog.show();
         }
 
         @Override
         public void onPageFinished(WebView view, String url) {
-//            super.onPageFinished(view, url);
-            // hide the progress bar once the page has loaded
             progressDialog.dismiss();
             if (url.startsWith(OUR_ORIGIN + "/")) {
                 if (bridgeShim != null && ! shimAtDocumentStart)
                     webView.evaluateJavascript(bridgeShim, null);
                 injectWebAuthnPolyfill();
             }
+            if (! firstPageShown)
+                revealOncePainted(0);
         }
 
         @Override
@@ -717,10 +729,40 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
             super.onReceivedError(view, request, error);
-            webView.loadUrl("file:///android_asset/no_internet.html");
+            // Only the page itself: this is called for every resource, and a frame or an image
+            // that fails to load is no reason to replace the whole page. The page comes from
+            // our own server on this phone, so what failed is that, not the internet.
+            if (! request.isForMainFrame())
+                return;
+            webView.loadUrl("file:///android_asset/load-error.html");
             progressDialog.dismiss();
-            Toast.makeText(getApplicationContext(),"Internet issue", Toast.LENGTH_SHORT).show();
+            firstPageShown = true;
         }
+    }
+
+    /** The page has finished loading, but it shows nothing until its scripts have run, its
+     *  app has mounted and the view has drawn a frame of it, and the splash should outlast
+     *  that blank page: asked every 50 ms whether the app has put anything in its element,
+     *  for two seconds at most, and then the view says when it has drawn. */
+    private void revealOncePainted(int asked) {
+        if (firstPageShown)
+            return;
+        if (webView == null || asked >= 40) {
+            firstPageShown = true;
+            return;
+        }
+        webView.evaluateJavascript("(function () { var app = document.getElementById('app'); return app != null && app.childElementCount > 0; })()", mounted -> {
+            if (! "true".equals(mounted)) {
+                new Handler(Looper.getMainLooper()).postDelayed(() -> revealOncePainted(asked + 1), 50);
+                return;
+            }
+            webView.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long requestId) {
+                    firstPageShown = true;
+                }
+            });
+        });
     }
 
     private void downloadFile(Uri uri) {
