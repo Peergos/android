@@ -1635,7 +1635,11 @@ public class MainActivity extends AppCompatActivity {
 
             // now start the server
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
-            ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, hasher);
+            ContentAddressedStorage remote = NetworkAccess.buildLocalDht(poster, true, hasher);
+            // Its ids and block store properties come from disk after the first run: nothing
+            // waits on the server before the page can load, and the page still loads, and a
+            // cached sign-in still works, when the server cannot be reached.
+            ContentAddressedStorage localDht = new RememberedServerInfo(remote, peergosDir.resolve(RememberedServerInfo.FILENAME));
             CoreNode core = NetworkAccess.buildDirectCorenode(poster);
             ContentAddressedStorage s3 = NetworkAccess.buildDirectS3Blockstore(localDht, core, poster, true, hasher).join();
             MutablePointersProxy httpMutable = new HttpMutablePointers(poster, poster);
@@ -1654,7 +1658,10 @@ public class MainActivity extends AppCompatActivity {
 
             Supplier<Connection> dbConnector = Builder.getDBConnector(a, "mutable-pointers-cache");
             JdbcIpnsAndSocial rawPointers = Builder.buildRawPointers(a, dbConnector);
-            OnlineState online = new OnlineState(() -> Futures.of(true));
+            // Asked of the server itself, not the remembered answer, so the offline caches stay
+            // in use until it really answers again. Saying "online" regardless made every call
+            // try the server first, and wait out its timeout, for as long as it was unreachable.
+            OnlineState online = new OnlineState(() -> remote.ids().thenApply(x -> true).exceptionally(t -> false));
             OfflinePointerCache pointerCache = new OfflinePointerCache(httpMutable, new JdbcPointerCache(rawPointers, locallyCachedStorage), online);
 
             SqlSupplier commands = Builder.getSqlCommands(a);
