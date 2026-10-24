@@ -135,6 +135,7 @@ import peergos.server.mutable.JdbcPointerCache;
 import peergos.server.net.SyncConfigHandler;
 import peergos.server.sql.SqlSupplier;
 import peergos.server.storage.FileBlockCache;
+import peergos.server.storage.RememberedServerInfo;
 import peergos.server.storage.auth.JdbcBatCave;
 import peergos.server.sync.PairLogger;
 import peergos.server.sync.SyncConfig;
