@@ -12,6 +12,7 @@ import android.provider.DocumentsContract;
 import android.webkit.MimeTypeMap;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Objects;
@@ -65,6 +66,16 @@ public class TestDocumentsProvider extends ContentProvider {
      *  32 bits of the seed), minSize (long), maxSize (long), and moveSupported (boolean, default true), as not
      *  every provider can move documents. */
     public static final String METHOD_RESET_AND_SEED = "test:resetAndSeed";
+    /** Test-only: every file and folder under the root, but the sync's staging folder, with each file's size, first
+     *  64 bytes and SHA-256, worked out here so no file has to cross the process boundary. Also whether the staging
+     *  folder is there. */
+    public static final String METHOD_TREE = "test:tree";
+    /** Test-only: sets the modification time of the file at the path in arg to extras' time, as SAF can't */
+    public static final String METHOD_SET_MODIFIED = "test:setModified";
+    /** Test-only: moves what is at the path in arg to extras' to, folders included, as another app editing the files
+     *  would. An error, such as there being nothing to move, is returned as error, as exceptions don't cross processes */
+    public static final String METHOD_MOVE_PATH = "test:move";
+    private static final String STAGING_DIR = ".peergos-partial-downloads";
 
     private File rootDir;
     private volatile boolean moveSupported = true;
@@ -183,6 +194,24 @@ public class TestDocumentsProvider extends ContentProvider {
                 out.putParcelable(EXTRA_URI, DocumentsContract.buildDocumentUriUsingTree(docUri, docIdFor(dst)));
                 return out;
             }
+            if (METHOD_TREE.equals(method))
+                return tree();
+            if (METHOD_SET_MODIFIED.equals(method)) {
+                new File(rootDir, arg).setLastModified(extras.getLong("time"));
+                return null;
+            }
+            if (METHOD_MOVE_PATH.equals(method)) {
+                File src = new File(rootDir, arg), dst = new File(rootDir, extras.getString("to"));
+                Bundle out = new Bundle();
+                if (! src.exists())
+                    out.putString("error", "gone");
+                else {
+                    dst.getParentFile().mkdirs();
+                    if (dst.exists() || ! src.renameTo(dst))
+                        out.putString("error", "move failed: " + arg + " -> " + extras.getString("to"));
+                }
+                return out;
+            }
             if (METHOD_RESET_AND_SEED.equals(method)) {
                 moveSupported = extras.getBoolean("moveSupported", true);
                 int count = extras.getInt("count");
@@ -196,6 +225,67 @@ public class TestDocumentsProvider extends ContentProvider {
             throw new RuntimeException(e);
         }
         return super.call(method, arg, extras);
+    }
+
+    private Bundle tree() throws Exception {
+        ArrayList<String> paths = new ArrayList<>(), heads = new ArrayList<>(), digests = new ArrayList<>();
+        ArrayList<Long> sizes = new ArrayList<>();
+        ArrayList<Integer> dirs = new ArrayList<>();
+        java.util.ArrayDeque<File> todo = new java.util.ArrayDeque<>(java.util.List.of(rootDir));
+        while (! todo.isEmpty()) {
+            File dir = todo.pop();
+            File[] kids = dir.listFiles();
+            if (kids == null)
+                continue;
+            for (File k : kids) {
+                String rel = rootDir.toPath().relativize(k.toPath()).toString().replace(File.separatorChar, '/');
+                if (rel.equals(STAGING_DIR) || rel.startsWith(STAGING_DIR + "/"))
+                    continue;
+                paths.add(rel);
+                if (k.isDirectory()) {
+                    dirs.add(1);
+                    heads.add("");
+                    digests.add("");
+                    sizes.add(0L);
+                    todo.push(k);
+                    continue;
+                }
+                dirs.add(0);
+                java.security.MessageDigest sha = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] head = new byte[0];
+                try (java.io.FileInputStream in = new java.io.FileInputStream(k)) {
+                    byte[] buf = new byte[64 * 1024];
+                    int read;
+                    boolean first = true;
+                    while ((read = in.read(buf)) > 0) {
+                        if (first)
+                            head = java.util.Arrays.copyOf(buf, Math.min(read, 64));
+                        first = false;
+                        sha.update(buf, 0, read);
+                    }
+                }
+                StringBuilder hex = new StringBuilder();
+                for (byte b : sha.digest())
+                    hex.append(String.format("%02x", b));
+                heads.add(android.util.Base64.encodeToString(head, android.util.Base64.NO_WRAP));
+                digests.add(hex.toString());
+                sizes.add(k.length());
+            }
+        }
+        Bundle out = new Bundle();
+        out.putStringArrayList("paths", paths);
+        out.putStringArrayList("heads", heads);
+        out.putStringArrayList("digests", digests);
+        long[] sizeArray = new long[sizes.size()];
+        int[] dirArray = new int[dirs.size()];
+        for (int i = 0; i < sizeArray.length; i++) {
+            sizeArray[i] = sizes.get(i);
+            dirArray[i] = dirs.get(i);
+        }
+        out.putLongArray("sizes", sizeArray);
+        out.putIntArray("dirs", dirArray);
+        out.putBoolean("partial", new File(rootDir, STAGING_DIR).exists());
+        return out;
     }
 
     private void resetAndSeed(int count, long seed, long minSize, long maxSize) throws IOException {
