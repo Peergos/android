@@ -26,7 +26,9 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -133,8 +135,59 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (path.size() == 0)
             return d;
         if (path.size() == 1)
-            return Optional.ofNullable(d.get().findFile(path.get(0)));
-        return getDescendant(Optional.ofNullable(d.get().findFile(path.get(0))), path.subList(1, path.size()));
+            return Optional.ofNullable(findChild(d.get(), path.get(0)));
+        return getDescendant(Optional.ofNullable(findChild(d.get(), path.get(0))), path.subList(1, path.size()));
+    }
+
+    private static final class Child {
+        final String docId, name, mimeType;
+        final long size, modified;
+
+        Child(String docId, String name, String mimeType, long size, long modified) {
+            this.docId = docId;
+            this.name = name;
+            this.mimeType = mimeType;
+            this.size = size;
+            this.modified = modified;
+        }
+
+        boolean isFile() {
+            return ! DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType) && mimeType != null && ! mimeType.isEmpty();
+        }
+    }
+
+    /** DocumentFile queries the provider again for each property of each child, so reading a folder of a
+     *  thousand photos through it, or finding one name in it with findFile, takes seconds. */
+    private List<Child> children(DocumentFile dir) {
+        Uri kids = DocumentsContract.buildChildDocumentsUriUsingTree(rootUri, DocumentsContract.getDocumentId(dir.getUri()));
+        String[] columns = {
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED};
+        List<Child> res = new ArrayList<>();
+        try (Cursor c = context.getContentResolver().query(kids, columns, null, null, null)) {
+            if (c == null)
+                return res;
+            while (c.moveToNext())
+                res.add(new Child(c.getString(0), c.getString(1), c.getString(2),
+                        c.isNull(3) ? 0 : c.getLong(3), c.isNull(4) ? 0 : c.getLong(4)));
+        }
+        return res;
+    }
+
+    /** listFiles only reads document ids, so it is a single query */
+    private static Map<String, DocumentFile> byDocumentId(DocumentFile dir) {
+        Map<String, DocumentFile> res = new HashMap<>();
+        for (DocumentFile kid : dir.listFiles())
+            res.put(DocumentsContract.getDocumentId(kid.getUri()), kid);
+        return res;
+    }
+
+    private DocumentFile findChild(DocumentFile dir, String name) {
+        Optional<Child> kid = children(dir).stream().filter(c -> name.equals(c.name)).findFirst();
+        return kid.map(c -> byDocumentId(dir).get(c.docId)).orElse(null);
     }
 
     @Override
@@ -153,7 +206,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (! exists(p)) {
             DocumentFile parentDir = getByPath(parent).get();
             String ourName = p.getFileName().toString();
-            DocumentFile subDir = parentDir.findFile(ourName);
+            DocumentFile subDir = findChild(parentDir, ourName);
             if (subDir == null)
                 parentDir.createDirectory(ourName);
         }
@@ -552,14 +605,17 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
     }
 
     private void filesCountRecurse(Path p, DocumentFile dir, AtomicLong count) {
-        DocumentFile[] kids = dir.listFiles();
-        Arrays.stream(kids).parallel().forEach(kid -> {
+        List<Child> kids = children(dir);
+        Map<String, DocumentFile> dirs = kids.stream().allMatch(Child::isFile) ? Collections.emptyMap() : byDocumentId(dir);
+        kids.parallelStream().forEach(kid -> {
             if (isPartialCopies(p, kid))
                 return;
             if (kid.isFile()) {
                 count.incrementAndGet();
             } else {
-                filesCountRecurse(p.resolve(kid.getName()), kid, count);
+                DocumentFile subDir = dirs.get(kid.docId);
+                if (subDir != null)
+                    filesCountRecurse(p.resolve(kid.name), subDir, count);
             }
         });
     }
@@ -573,27 +629,30 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         return Optional.empty();
     }
 
-    private static boolean isPartialCopies(Path dir, DocumentFile kid) {
-        return dir.toString().isEmpty() && LocalFileSystem.PARTIAL_COPIES_DIR.equals(kid.getName());
+    private static boolean isPartialCopies(Path dir, Child kid) {
+        return dir.toString().isEmpty() && LocalFileSystem.PARTIAL_COPIES_DIR.equals(kid.name);
     }
 
     public void applyToSubtree(Path p, DocumentFile dir, Consumer<FileProps> onFile, Consumer<FileProps> onDir, boolean parallel) {
-        DocumentFile[] kids = dir.listFiles();
+        List<Child> kids = children(dir);
+        Map<String, DocumentFile> dirs = kids.stream().allMatch(Child::isFile) ? Collections.emptyMap() : byDocumentId(dir);
         // Sequential during the first sync for this pair — parallel siblings race on
         // mkdir/cryptree updates for a shared parent and stall progress with CAS
         // exceptions. Switch to parallel once an initial sync has completed.
-        java.util.stream.Stream<DocumentFile> stream = parallel
-                ? Arrays.stream(kids).parallel()
-                : Arrays.stream(kids);
+        java.util.stream.Stream<Child> stream = parallel
+                ? kids.parallelStream()
+                : kids.stream();
         stream.forEach(kid -> {
             if (isPartialCopies(p, kid))
                 return;
-            FileProps props = new FileProps(p.resolve(kid.getName()).toString(), kid.lastModified() / 1000 * 1000, kid.length(), Optional.empty());
+            FileProps props = new FileProps(p.resolve(kid.name).toString(), kid.modified / 1000 * 1000, kid.size, Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
             } else {
                 onDir.accept(props);
-                applyToSubtree(p.resolve(kid.getName()), kid, onFile, onDir, parallel);
+                DocumentFile subDir = dirs.get(kid.docId);
+                if (subDir != null)
+                    applyToSubtree(p.resolve(kid.name), subDir, onFile, onDir, parallel);
             }
         });
     }

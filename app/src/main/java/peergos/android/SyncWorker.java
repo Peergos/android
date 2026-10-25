@@ -84,6 +84,8 @@ public class SyncWorker extends Worker {
     /** Passes running now. A pass waits for the one ahead of it on the lock, so a ticker that
      *  joined that queue would sync again the moment the first one finished. */
     public static final AtomicInteger passesInFlight = new AtomicInteger(0);
+    /** A pass that started after another was asked for covers it */
+    private static final AtomicLong lastPassStartNs = new AtomicLong(Long.MIN_VALUE);
     private static final Logger LOG = Logging.LOG();
     /** How soon, and how often, a running pass rechecks that it is still off mobile data. */
     private static final long METERED_FIRST_CHECK_MS = 2_000;
@@ -121,20 +123,24 @@ public class SyncWorker extends Worker {
      * @return whether every folder in the pass synced, so a false asks for another go
      */
     public static boolean runSyncOnce(Context context, Path peergosDir) {
+        long requestedNs = System.nanoTime();
         passesInFlight.incrementAndGet();
         try {
-            return runPass(context, peergosDir);
+            return runPass(context, peergosDir, requestedNs);
         } finally {
             lastPassEndMs.set(System.currentTimeMillis());
             passesInFlight.decrementAndGet();
         }
     }
 
-    private static boolean runPass(Context context, Path peergosDir) {
+    private static boolean runPass(Context context, Path peergosDir, long requestedNs) {
         synchronized (lock) {
             // the scheduled work keeps firing while paused, so honour the flag here too
             if (status.isPaused())
                 return true;
+            if (lastPassStartNs.get() - requestedNs > 0)
+                return true;
+            lastPassStartNs.set(System.nanoTime());
             SyncConfig syncConfig = null;
             try {
                 System.out.println("SYNC: starting work");
