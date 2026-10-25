@@ -85,7 +85,7 @@ public class SyncWorker extends Worker {
      *  joined that queue would sync again the moment the first one finished. */
     public static final AtomicInteger passesInFlight = new AtomicInteger(0);
     /** A pass that started after another was asked for covers it */
-    private static final AtomicLong lastPassStartNs = new AtomicLong(Long.MIN_VALUE);
+    private static Long lastPassStartNs = null; // guarded by lock
     private static final Logger LOG = Logging.LOG();
     /** How soon, and how often, a running pass rechecks that it is still off mobile data. */
     private static final long METERED_FIRST_CHECK_MS = 2_000;
@@ -138,9 +138,9 @@ public class SyncWorker extends Worker {
             // the scheduled work keeps firing while paused, so honour the flag here too
             if (status.isPaused())
                 return true;
-            if (lastPassStartNs.get() - requestedNs > 0)
+            if (lastPassStartNs != null && lastPassStartNs - requestedNs > 0)
                 return true;
-            lastPassStartNs.set(System.nanoTime());
+            lastPassStartNs = System.nanoTime();
             SyncConfig syncConfig = null;
             try {
                 System.out.println("SYNC: starting work");
