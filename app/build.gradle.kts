@@ -77,6 +77,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("com.yubico.yubikit:android:3.0.1")
     implementation("com.yubico.yubikit:fido:3.0.1")

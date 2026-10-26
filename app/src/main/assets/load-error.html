@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Peergos</title>
+    <style>
+        :root { color-scheme: light dark; --fg: #1d2b3a; --muted: #5b6b7a; --bg: #f5f7f8; --accent: #11695c; }
+        @media (prefers-color-scheme: dark) { :root { --fg: #e6ebef; --muted: #a7b2bc; --bg: #15191d; --accent: #3fbf9f; } }
+        html, body { height: 100%; margin: 0; }
+        body { display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box;
+               background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; text-align: center; }
+        main { max-width: 28em; }
+        h1 { font-size: 1.25em; margin: 0 0 .5em; }
+        p { color: var(--muted); margin: 0 0 1.5em; }
+        a { display: inline-block; padding: 12px 28px; border-radius: 24px; background: var(--accent); color: #fff;
+            font-weight: 600; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Peergos couldn't load</h1>
+        <p>Something went wrong while it was starting. Try again, or close Peergos and open it again.</p>
+        <a href="peergos-app://retry">Try again</a>
+    </main>
+</body>
+</html>
