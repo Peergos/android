@@ -119,11 +119,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     public Cursor queryRoots(String[] projection) {
         MatrixCursor cursor = new MatrixCursor(projection != null ? projection : DEFAULT_ROOT_PROJECTION);
         Optional<UserContext> ctxOpt = PeergosSession.context();
-        if (ctxOpt.isEmpty()) {
-            // asked before the mount's turn came: it starts now, and the next query finds it
-            PeergosApp.restoreMount();
-            return cursor;
-        }
+        if (ctxOpt.isEmpty()) return cursor;
         UserContext ctx = ctxOpt.get();
         String username = ctx.username;
 

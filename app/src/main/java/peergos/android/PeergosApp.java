@@ -1,8 +1,6 @@
 package peergos.android;
 
 import android.app.Application;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 
 import java.io.File;
@@ -12,7 +10,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import peergos.server.Main;
@@ -31,8 +28,6 @@ import peergos.shared.user.HttpPoster;
 public class PeergosApp extends Application {
 
     private static final String TAG = "PeergosApp";
-    private static final long MOUNT_RESTORE_DELAY_MS = 8_000;
-    private static final AtomicBoolean mountRestored = new AtomicBoolean(false);
 
     @Override
     public void onCreate() {
@@ -70,19 +65,7 @@ public class PeergosApp extends Application {
         MountBackend backend = new DocumentsProviderBackend(getApplicationContext());
         MountConfigHandler handler = new MountConfigHandler(props, store, backend, cryptoFactory, networkFactory);
         PeergosSession.setMountHandler(handler);
-        // Restoring a mount signs in, which is a key derivation and a few round trips, and the
-        // start of the app has a server to bring up and a page to load: the mount waits its
-        // turn, unless something asks for it first.
-        new Handler(Looper.getMainLooper()).postDelayed(PeergosApp::restoreMount, MOUNT_RESTORE_DELAY_MS);
-    }
-
-    /** The saved mount, signed in and enabled: once, whether its turn came or the documents
-     *  provider was asked for roots before it. Nothing to do without a handler or a session
-     *  already there. */
-    static void restoreMount() {
-        if (PeergosSession.context().isPresent() || ! mountRestored.compareAndSet(false, true))
-            return;
-        PeergosSession.mountHandler().ifPresent(MountConfigHandler::start);
+        handler.start();
     }
 
     static Optional<String> readSavedServerUrl(Path peergosDir) {
