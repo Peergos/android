@@ -62,6 +62,13 @@ android {
     }
 }
 
+// R8 doesn't always rewrite the libraries' baseline profiles the same way, so the profile in
+// the apk varied between builds of the same source, which made the apk unreproducible
+tasks.configureEach {
+    if (name.contains("ArtProfile"))
+        enabled = false
+}
+
 dependencies {
     val work_version = "2.10.1"
     val lifecycle_version = "2.9.0"

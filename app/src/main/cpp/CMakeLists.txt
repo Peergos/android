@@ -12,6 +12,13 @@ cmake_minimum_required(VERSION 3.22.1)
 # build script scope).
 project("scrypt")
 
+# The debug info names the paths the build ran in, and the build id is a hash of it, so
+# map them to fixed names or no one else can build the same library
+add_compile_options(
+        -ffile-prefix-map=${CMAKE_SOURCE_DIR}=src
+        -ffile-prefix-map=${CMAKE_BINARY_DIR}=build
+        -ffile-prefix-map=${ANDROID_NDK}=ndk)
+
 # Creates and names a library, sets it as either STATIC
 # or SHARED, and provides the relative paths to its source code.
 # You can define multiple libraries, and CMake builds them for you.
