@@ -464,11 +464,12 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     }
 
     /** Read-write proxy callback. Writes land in a staging file in the cache dir, and the
-     *  whole thing is uploaded once on release via the normal {@code uploadFileSection}
-     *  path — the same one in-app uploads use.
+     *  whole thing is uploaded on fsync and on release via the normal
+     *  {@code uploadFileSection} path — the same one in-app uploads use.
      *
-     *  The upload runs on {@code postReleasePool} so the FD-close path doesn't block on
-     *  network I/O; the foreground service stays acquired until it completes. */
+     *  The release upload runs on {@code postReleasePool} so the FD-close path doesn't
+     *  block on network I/O; the foreground service stays acquired until it completes. An
+     *  fsync blocks the writer instead: that is the one call whose answer it waits for. */
     private static final class PeergosWriteProxyCallback extends ProxyFileDescriptorCallback {
         private final String parentId;
         private final String name;
@@ -478,15 +479,15 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final ContentResolver cr;
         private final ExecutorService postReleasePool;
         private final UploadProgressNotifier.Handle handle;
-        private final File staging;
-        private final FileWrapper fw;
-        private final boolean needsPrefill;
+        private File staging;
+        private FileWrapper fw;
+        private boolean needsPrefill;
         /** Where the writer's offset 0 lands: the end of the existing content for an append,
          *  which the proxy fd cannot express itself. */
         private final long appendBase;
         /** Set for a file this open created: it starts empty, so its bytes can go straight
          *  out chunk by chunk as they arrive instead of being staged on disk first. */
-        private final StreamingWriteBuffer stream;
+        private StreamingWriteBuffer stream;
         private final List<byte[]> chunkHashes = new ArrayList<>();
         /** This upload creates the file, so it is the one place that picks a chunk size. */
         private final int chunkSize = FileProperties.chunkSizeForNewFiles();
@@ -531,8 +532,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
          *  our handler thread rather than the binder thread that called openDocument. */
         private RandomAccessFile staged() throws IOException {
             if (raf != null) return raf;
+            if (staging == null)
+                staging = File.createTempFile("peergos-write-", ".tmp", appCtx.getCacheDir());
             raf = new RandomAccessFile(staging, "rw");
             if (needsPrefill) {
+                if (fw == null) fw = lookup();
                 long remaining = size;
                 try (AsyncReader r = fw.getInputStream(s.network, s.crypto, size, p -> {}).join()) {
                     byte[] buf = new byte[64 * 1024];
@@ -606,9 +610,41 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             }
         }
 
+        /** An fsync is the writer asking whether its bytes are safe, and what it tells its
+         *  user is the answer it gets. So they go to Peergos now, and a failed upload is EIO,
+         *  which a close can never say. An editor that syncs on every save uploads on every
+         *  save; that is the price of being told. */
         @Override
-        public void onFsync() {
-            // Nothing reaches Peergos until release, so there is nothing to flush.
+        public void onFsync() throws ErrnoException {
+            if (writeError != null)
+                throw new ErrnoException("onFsync", OsConstants.EIO);
+            try {
+                upload();
+            } catch (Exception e) {
+                Log.w(TAG, "fsync upload of " + name + " failed", e);
+                throw new ErrnoException("onFsync", OsConstants.EIO);
+            }
+        }
+
+        /** Everything written since the last upload goes to Peergos. */
+        private void upload() throws Exception {
+            if (!dirty) return;
+            if (stream != null) {
+                // The stream ends with this upload. Anything the writer adds after it
+                // revises a file that now exists, which is what staging is for.
+                stream.setEof();
+                uploadTask.get();
+                finishStreamedUpload(size);
+                stream = null;
+                uploadTask = null;
+                // The wrapper from the open is the empty placeholder; staging looks the
+                // file up afresh if the writer goes on.
+                fw = null;
+                needsPrefill = true;
+            } else {
+                overwriteExistingFile(size);
+            }
+            dirty = false;
         }
 
         @Override
@@ -617,21 +653,12 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             raf = null;
             if (stream != null) stream.setEof();
             thread.quitSafely();
-            final long finalSize = size;
-            final boolean wroteAnything = dirty;
-            final String openError = writeError;
-            final Future<?> inFlight = uploadTask;
             postReleasePool.execute(() -> {
-                String error = openError;
+                String error = writeError;
                 try {
-                    if (wroteAnything && error == null) {
+                    if (error == null) {
                         try {
-                            if (inFlight != null) {
-                                inFlight.get();
-                                finishStreamedUpload(finalSize);
-                            } else {
-                                overwriteExistingFile(finalSize);
-                            }
+                            upload();
                         } catch (Exception e) {
                             Log.w(TAG, "upload of " + name + " failed", e);
                             error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
