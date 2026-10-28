@@ -8,11 +8,9 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.app.ProgressDialog;
-import android.content.BroadcastReceiver;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.provider.DocumentsContract;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -823,12 +821,10 @@ public class MainActivity extends AppCompatActivity {
         File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-        DownloadForegroundService.increment();
-        ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
-        dm.enqueue(request);
+        // what it downloads is served from this process, which has to stay up until it is done
+        DownloadForegroundService.track(MainActivity.this, dm.enqueue(request));
 
         MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-        ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     public class UploadHandler extends WebChromeClient {
@@ -1017,17 +1013,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
-
-    BroadcastReceiver onComplete = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            Toast.makeText(getApplicationContext(),"Downloading Complete",Toast.LENGTH_SHORT).show();
-            DownloadForegroundService.decrement();
-            Intent stopIntent = new Intent(context, DownloadForegroundService.class);
-            stopIntent.setAction(DownloadForegroundService.ACTION_STOP);
-            ContextCompat.startForegroundService(context, stopIntent);
-        }
-    };
 
     DownloadListener downloadListener = (url, userAgent, contentDisposition, wrongMimetype, contentLength) -> downloadFile(Uri.parse(url));
 
