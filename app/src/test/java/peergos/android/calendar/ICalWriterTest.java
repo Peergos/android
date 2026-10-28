@@ -58,7 +58,7 @@ public class ICalWriterTest {
 
     @Test
     public void aReminderSetOnThePhoneReplacesTheOneInTheFile() {
-        String written = ICalWriter.withReminder(WITH_ALARM, Optional.of(30), "Standup");
+        String written = ICalWriter.withReminders(WITH_ALARM, List.of(30), "Standup");
         Assert.assertTrue(written.contains("TRIGGER:-PT30M"));
         Assert.assertFalse(written.contains("TRIGGER:-PT15M"));
         Assert.assertEquals(1, lines(written).stream().filter(l -> l.equals("BEGIN:VALARM")).count());
@@ -66,7 +66,7 @@ public class ICalWriterTest {
 
     @Test
     public void clearingItOnThePhoneClearsItInTheFile() {
-        String written = ICalWriter.withReminder(WITH_ALARM, Optional.empty(), "Standup");
+        String written = ICalWriter.withReminders(WITH_ALARM, List.of(), "Standup");
         Assert.assertFalse(written.contains("VALARM"));
         Assert.assertTrue(written.contains("SUMMARY:Standup"));
     }
@@ -74,10 +74,10 @@ public class ICalWriterTest {
     @Test
     public void anAlarmThePhoneCannotShowIsLeftWhereItIs() {
         String fromTheEnd = WITH_ALARM.replace("TRIGGER:-PT15M", "TRIGGER;RELATED=END:-PT5M");
-        String written = ICalWriter.withReminder(fromTheEnd, Optional.empty(), "Standup");
+        String written = ICalWriter.withReminders(fromTheEnd, List.of(), "Standup");
         Assert.assertTrue(written.contains("TRIGGER;RELATED=END:-PT5M"));
 
-        String alsoOurs = ICalWriter.withReminder(fromTheEnd, Optional.of(10), "Standup");
+        String alsoOurs = ICalWriter.withReminders(fromTheEnd, List.of(10), "Standup");
         Assert.assertTrue(alsoOurs.contains("TRIGGER;RELATED=END:-PT5M"));
         Assert.assertTrue(alsoOurs.contains("TRIGGER:-PT10M"));
         Assert.assertEquals(2, lines(alsoOurs).stream().filter(l -> l.equals("BEGIN:VALARM")).count());
@@ -86,7 +86,7 @@ public class ICalWriterTest {
     @Test
     public void anEventWithNoAlarmGainsTheOneThePhoneHas() {
         String plain = WITH_ALARM.replaceAll("(?s)BEGIN:VALARM.*END:VALARM\r\n", "");
-        String written = ICalWriter.withReminder(plain, Optional.of(60), "Standup");
+        String written = ICalWriter.withReminders(plain, List.of(60), "Standup");
         Assert.assertTrue(written.contains("BEGIN:VALARM"));
         Assert.assertTrue(written.contains("ACTION:DISPLAY"));
         Assert.assertTrue(written.contains("TRIGGER:-PT60M"));
@@ -97,7 +97,17 @@ public class ICalWriterTest {
 
     @Test
     public void whatTheMirrorWritesIsWhatItReadsBack() {
-        String written = ICalWriter.withReminder(WITH_ALARM, Optional.of(45), "Standup");
-        Assert.assertEquals(Optional.of(45), EventTranslator.reminderMinutes(written));
+        String written = ICalWriter.withReminders(WITH_ALARM, List.of(45), "Standup");
+        Assert.assertEquals(List.of(45), EventTranslator.reminders(written));
+    }
+
+    @Test
+    public void everyReminderOnThePhoneIsAnAlarmInTheFile() {
+        String written = ICalWriter.withReminders(WITH_ALARM, List.of(10, 1440), "Standup");
+        Assert.assertEquals(2, lines(written).stream().filter(l -> l.equals("BEGIN:VALARM")).count());
+        Assert.assertTrue(written.contains("TRIGGER:-PT10M"));
+        Assert.assertTrue(written.contains("TRIGGER:-PT1440M"));
+        Assert.assertFalse(written.contains("TRIGGER:-PT15M"));
+        Assert.assertEquals(List.of(10, 1440), EventTranslator.reminders(written));
     }
 }
