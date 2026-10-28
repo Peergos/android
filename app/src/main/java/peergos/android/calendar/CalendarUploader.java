@@ -364,10 +364,16 @@ public class CalendarUploader {
         Optional<ContentValues> before = existing.map(Existing::values);
 
         lines.add(ICalWriter.text("SUMMARY", row.title == null ? "" : row.title));
+        // A field cleared on the phone is a NULL column: the property goes, or the file
+        // keeps the old text and the next download brings it back.
         if (row.description != null)
             lines.add(ICalWriter.text("DESCRIPTION", row.description));
+        else
+            removals.add("DESCRIPTION");
         if (row.location != null)
             lines.add(ICalWriter.text("LOCATION", row.location));
+        else
+            removals.add("LOCATION");
 
         ICalWriter.Form form = form(row, existing);
         if (before.isEmpty() || ! sameTimes(row, before.get(), faithful)) {
