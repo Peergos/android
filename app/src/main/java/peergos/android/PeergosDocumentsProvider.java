@@ -879,13 +879,10 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         Session(UserContext c, NetworkAccess n, Crypto cr) { context = c; network = n; crypto = cr; }
     }
 
-    /** How long a request waits for the saved mount's sign-in at start, which takes a second or two. */
-    private static final long SIGN_IN_WAIT_MILLIS = 20_000;
-
     private Session sessionOrThrow() throws FileNotFoundException {
         Optional<UserContext> ctx;
         try {
-            ctx = PeergosSession.awaitContext(SIGN_IN_WAIT_MILLIS);
+            ctx = PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new FileNotFoundException("Interrupted waiting for Peergos to sign in");

@@ -15,6 +15,8 @@ public final class PeergosSession {
     private static volatile NetworkAccess network;
     private static volatile Crypto crypto;
     private static volatile MountConfigHandler mountHandler;
+    /** How long a request waits for the saved mount's sign-in at start, which takes a second or two. */
+    public static final long SIGN_IN_WAIT_MILLIS = 20_000;
     /** Set at process start while a saved mount signs in, and let go by the session it publishes. */
     private static volatile CountDownLatch signingIn;
 
