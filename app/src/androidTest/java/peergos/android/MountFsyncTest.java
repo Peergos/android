@@ -16,6 +16,7 @@ import org.junit.runner.RunWith;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
@@ -37,6 +38,7 @@ import peergos.shared.user.fs.ThumbnailGenerator;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 /** An app writing through the Files-app mount learns from fsync whether its bytes reached
@@ -139,6 +141,26 @@ public class MountFsyncTest {
             try {
                 out.getFD().sync();
                 fail("fsync reported the bytes safe, but nothing could store them");
+            } catch (IOException expected) {
+            }
+        }
+    }
+
+    /** As the share target writes what is shared with Peergos: a stream from openOutputStream, synced before it is
+     *  closed. */
+    @Test
+    public void aStreamFromOpenOutputStreamHearsAFailedUpload() throws Exception {
+        String folder = "fsync-share";
+        user.getUserRoot().join().mkdir(folder, network, false, user.mirrorBatId(), crypto).join();
+        String path = "/" + user.username + "/" + folder + "/shared.txt";
+        try (OutputStream out = resolver.openOutputStream(document(path))) {
+            assertTrue("the mount's stream cannot be synced: " + out.getClass(), out instanceof FileOutputStream);
+            out.write("shared".getBytes(StandardCharsets.UTF_8));
+            user.getByPath("/" + user.username + "/" + folder).join().get()
+                    .remove(user.getUserRoot().join(), Paths.get(user.username, folder), user).join();
+            try {
+                ((FileOutputStream) out).getFD().sync();
+                fail("the share would have been reported as saved");
             } catch (IOException expected) {
             }
         }
