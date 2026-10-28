@@ -178,6 +178,42 @@ public class AndroidPartialCopyTest {
     }
 
     @Test
+    public void aFileTheProviderWouldNameAfterItsContent() throws Exception {
+        for (boolean moveSupported : List.of(true, false)) {
+            reset(moveSupported);
+            SyncState state = new JdbcTreeState(":memory:");
+            // a zip inside, under an extension in capitals: read by its first bytes it is a zip, and a provider adds
+            // .zip to a name asked for as one that does not end in it
+            byte[] data = ("PK\u0003\u0004" + new String(randomText(4096, 3))).getBytes();
+            Files.write(otherRoot.resolve("Report.DOCX"), data);
+            sync(state);
+            Map<String, String> expected = Map.of("Report.DOCX", new String(data));
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            sync(state);
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            Assert.assertEquals("move " + moveSupported, expected, tree(other));
+            Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
+        }
+    }
+
+    @Test
+    public void aNameTheStorageCannotHoldIsReportedAsSuch() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.write(otherRoot.resolve("a:b.txt"), "colon".getBytes());
+        try {
+            sync(state);
+            Assert.fail("A name the storage cannot hold was synced");
+        } catch (Exception e) {
+            StringBuilder messages = new StringBuilder();
+            for (Throwable t = e; t != null; t = t.getCause())
+                messages.append(t.getMessage()).append(" / ");
+            Assert.assertTrue(messages.toString(), messages.toString().contains("can't hold a file named a:b.txt"));
+        }
+        Assert.assertFalse(tree(device).containsKey("a_b.txt"));
+    }
+
+    @Test
     public void cannotCreateUnderAFile() throws Exception {
         reset(true);
         byte[] data = "file".getBytes();
