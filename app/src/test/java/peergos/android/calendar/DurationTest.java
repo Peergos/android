@@ -33,6 +33,7 @@ public class DurationTest {
     public void notADuration() {
         Assert.assertEquals(Optional.empty(), CalendarUploader.duration("2 hours"));
         Assert.assertEquals(Optional.empty(), CalendarUploader.duration("P"));
+        Assert.assertEquals(Optional.empty(), CalendarUploader.duration("PT"));
         Assert.assertEquals(Optional.empty(), CalendarUploader.duration(""));
     }
 }

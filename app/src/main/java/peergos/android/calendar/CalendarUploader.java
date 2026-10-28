@@ -22,6 +22,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;
@@ -626,10 +629,8 @@ public class CalendarUploader {
      * reached every other device an hour long.
      */
     static Optional<Duration> duration(String value) {
-        java.util.regex.Matcher m = java.util.regex.Pattern
-                .compile("([+-])?P(?:(\\d+)W)?(?:(\\d+)D)?T?(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?")
-                .matcher(value.trim());
-        if (! m.matches() || value.trim().endsWith("P"))
+        Matcher m = DURATION.matcher(value.trim());
+        if (! m.matches() || IntStream.rangeClosed(2, 6).allMatch(unit -> m.group(unit) == null))
             return Optional.empty();
         Duration d = Duration.ZERO
                 .plusDays(7L * number(m.group(2)) + number(m.group(3)))
@@ -638,6 +639,9 @@ public class CalendarUploader {
                 .plusSeconds(number(m.group(6)));
         return Optional.of("-".equals(m.group(1)) ? d.negated() : d);
     }
+
+    private static final Pattern DURATION =
+            Pattern.compile("([+-])?P(?:(\\d+)W)?(?:(\\d+)D)?T?(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?");
 
     private static long number(String group) {
         return group == null ? 0 : Long.parseLong(group);
