@@ -913,6 +913,10 @@ public class MainActivity extends AppCompatActivity {
 
         // check if the chrome activity is a file choosing session
         if (requestCode == file_chooser_activity_code) {
+            // Gone when the system stopped the process while the picker was open: this is a new one, and the
+            // page that asked for files went with the old, so there is nobody to hand them to.
+            if (mUploadMessageArr == null)
+                return;
             if (resultCode == Activity.RESULT_OK && data != null) {
                 Uri[] results = null;
 
