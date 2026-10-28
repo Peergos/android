@@ -208,7 +208,7 @@ public class AndroidPartialCopyTest {
             StringBuilder messages = new StringBuilder();
             for (Throwable t = e; t != null; t = t.getCause())
                 messages.append(t.getMessage()).append(" / ");
-            Assert.assertTrue(messages.toString(), messages.toString().contains("can't hold a file named a:b.txt"));
+            Assert.assertTrue(messages.toString(), messages.toString().contains("Couldn't create a:b.txt in the synced folder: its storage named it a_b.txt"));
         }
         Assert.assertFalse(tree(device).containsKey("a_b.txt"));
     }

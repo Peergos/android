@@ -487,8 +487,9 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
      *  not go with the type (Report.DOCX, read as a zip, became Report.DOCX.zip), and replaces characters its
      *  storage can't hold (a:b.txt became a_b.txt). Everything after finds the file by its name - the copy being
      *  put in place, the next sync - so a file under another name was lost to it, and the sync failed on it at
-     *  every pass. Asked for under the type its own name implies, a name is only changed for the second reason,
-     *  which no name given here can get round: that file is removed again, and the sync told why. */
+     *  every pass. Asked for under the type its own name implies, a name is only changed for the second reason, or
+     *  for a file of that name that appeared meanwhile, which no name given here can get round: that file is
+     *  removed again, and the sync told what the storage did. */
     private static DocumentFile createNamed(DocumentFile dir, String name) throws IOException {
         DocumentFile file = dir.createFile(typeOfName(name), name);
         if (file == null)
@@ -496,7 +497,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (! name.equals(file.getName())) {
             String given = file.getName();
             file.delete();
-            throw new IOException("The synced folder can't hold a file named " + name + ", its storage would call it " + given);
+            throw new IOException("Couldn't create " + name + " in the synced folder: its storage named it " + given);
         }
         return file;
     }
