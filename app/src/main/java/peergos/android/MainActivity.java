@@ -229,8 +229,12 @@ public class MainActivity extends AppCompatActivity {
     ContentAddressedStorage localDht;
     CoreNode core;
     ActivityResultLauncher requestPermissions;
-    // requested on the http server thread, completed on the ui thread
-    volatile CompletableFuture<String> chosenHostDir;
+    // requested on the http server thread, completed on the ui thread, by whichever activity the picker's answer
+    // comes back to: the one that asked may have been recreated meanwhile
+    static volatile CompletableFuture<String> chosenHostDir;
+    // The activity in front. The server outlives activities - a theme or language change, split screen, recreates
+    // this one under it - so it asks this rather than the one it was started from, which is gone.
+    private static volatile MainActivity current;
     // a dialog can only go up while this activity is on screen
     private volatile boolean resumed = false;
     // the calendar and contacts are only started when the user asks for them, so that is when
@@ -255,6 +259,13 @@ public class MainActivity extends AppCompatActivity {
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
     private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
+
+    /** A folder chosen by the user, asked for in the activity in front: with none, nobody can be asked, which is
+     *  what an empty answer says. */
+    private static CompletableFuture<String> chooseDirInCurrentActivity() {
+        MainActivity activity = current;
+        return activity == null ? CompletableFuture.completedFuture("") : activity.chooseDirToAccess();
+    }
 
     private CompletableFuture<String> chooseDirToAccess() {
         CompletableFuture<String> res = new CompletableFuture<>();
@@ -535,6 +546,7 @@ public class MainActivity extends AppCompatActivity {
         // loaded, three screens before the first one that meant anything.
         SplashScreen splash = SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
+        current = this;
         splash.setKeepOnScreenCondition(() -> ! firstPageShown);
         System.out.println("Peergos v1");
         AppLifecycleObserver appLifecycleObserver = new AppLifecycleObserver();
@@ -1123,6 +1135,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        current = this;
         SyncPermission.CALENDAR.setAsker(calendarPermissionAsker);
         SyncPermission.CONTACTS.setAsker(contactsPermissionAsker);
         // a folder removed while the app is on screen never reaches start(), so let the count
@@ -1159,6 +1172,13 @@ public class MainActivity extends AppCompatActivity {
         if (SyncWorker.status.getStatus() == SyncStatus.ERROR)
             SyncWorker.retrySoon(this, Paths.get(getFilesDir().getAbsolutePath()));
         yubiKitManager.stopNfcDiscovery(this);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (current == this)
+            current = null;
+        super.onDestroy();
     }
 
     // ---- page bridge ----
@@ -1753,7 +1773,7 @@ public class MainActivity extends AppCompatActivity {
             Optional<UserService.LocalAppProperties> localAppProps = Optional.of(new UserService.LocalAppProperties(peergosDir, serverUrl));
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps,
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(MainActivity::chooseDirInCurrentActivity))), localAppProps,
                     PeergosSession.mountHandler());
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
