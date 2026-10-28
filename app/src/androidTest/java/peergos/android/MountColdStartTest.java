@@ -46,6 +46,9 @@ public class MountColdStartTest {
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
         network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
                 5_000, crypto.hasher, false, DeviceTokenStore.inMemory()).join();
+        // a device with a saved mount signs it in as the process starts, and two sign-ins at once can fail
+        // inside the crypto
+        PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
         user = UserContext.signUp("coldstart" + (System.currentTimeMillis() % 1_000_000), "test-password", "",
                 network, crypto).join();
     }
