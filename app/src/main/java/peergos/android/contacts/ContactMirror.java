@@ -7,7 +7,16 @@ import android.content.ContentValues;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.ContactsContract;
+import android.provider.ContactsContract.CommonDataKinds.Email;
+import android.provider.ContactsContract.CommonDataKinds.Event;
+import android.provider.ContactsContract.CommonDataKinds.Nickname;
+import android.provider.ContactsContract.CommonDataKinds.Note;
+import android.provider.ContactsContract.CommonDataKinds.Organization;
+import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.provider.ContactsContract.CommonDataKinds.Photo;
+import android.provider.ContactsContract.CommonDataKinds.StructuredName;
+import android.provider.ContactsContract.CommonDataKinds.StructuredPostal;
+import android.provider.ContactsContract.CommonDataKinds.Website;
 import android.provider.ContactsContract.Data;
 import android.provider.ContactsContract.RawContacts;
 import android.util.Log;
@@ -191,14 +200,22 @@ public class ContactMirror {
                 .withSelection(RawContacts._ID + "=?", new String[]{Long.toString(rawContactId)})
                 .withValues(contact).build());
         // Rebuilt rather than diffed: a vCard property has no id to match a data row by, so
-        // there is nothing to line an old row up with a new one. A photo is the exception —
-        // the card may carry none because a CardDAV client never sent one, and dropping the
-        // one on the phone would be losing data the card never claimed to hold.
+        // there is nothing to line an old row up with a new one. Only the kinds the card can
+        // carry are rebuilt, though: an IM address, a relation, an anniversary or a group
+        // membership exists on the phone alone, never reaches the card, and would be lost for
+        // good if the card's arrival cleared it. A photo is kept too when the card carries
+        // none - a CardDAV client may simply never have sent one.
+        List<String> kinds = new ArrayList<>(CARRIED_KINDS);
+        if (hasPhoto)
+            kinds.add(Photo.CONTENT_ITEM_TYPE);
+        String placeholders = String.join(",", java.util.Collections.nCopies(kinds.size(), "?"));
+        List<String> args = new ArrayList<>(List.of(Long.toString(rawContactId)));
+        args.addAll(kinds);
+        args.add(Integer.toString(Event.TYPE_BIRTHDAY));
         batch.add(ContentProviderOperation.newDelete(asSyncAdapter(Data.CONTENT_URI))
-                .withSelection(hasPhoto ? Data.RAW_CONTACT_ID + "=?"
-                                : Data.RAW_CONTACT_ID + "=? AND " + Data.MIMETYPE + "<>?",
-                        hasPhoto ? new String[]{Long.toString(rawContactId)}
-                                : new String[]{Long.toString(rawContactId), Photo.CONTENT_ITEM_TYPE})
+                .withSelection(Data.RAW_CONTACT_ID + "=? AND " + Data.MIMETYPE + " IN (" + placeholders + ")"
+                                + " AND NOT (" + Data.MIMETYPE + "='" + Event.CONTENT_ITEM_TYPE + "' AND " + Event.TYPE + "<>?)",
+                        args.toArray(new String[0]))
                 .build());
         for (ContentValues row : rows) {
             batch.add(ContentProviderOperation.newInsert(asSyncAdapter(Data.CONTENT_URI))
@@ -208,6 +225,13 @@ public class ContactMirror {
         }
         provider.applyBatch(batch);
     }
+
+    /** The data kinds a card carries, as {@link VCardTranslator} reads them: what a remote
+     *  change replaces. Of the Event rows only a birthday is among them. */
+    private static final List<String> CARRIED_KINDS = List.of(
+            StructuredName.CONTENT_ITEM_TYPE, Nickname.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE,
+            Email.CONTENT_ITEM_TYPE, StructuredPostal.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE,
+            Website.CONTENT_ITEM_TYPE, Note.CONTENT_ITEM_TYPE, Event.CONTENT_ITEM_TYPE);
 
     /**
      * Drops the contacts of an address book that is no longer there. Deleting them as the
