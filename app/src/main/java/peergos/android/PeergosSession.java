@@ -34,6 +34,14 @@ public final class PeergosSession {
         signingIn = new CountDownLatch(1);
     }
 
+    /** The sign-in at start will not happen after all: nothing waits for it. */
+    public static void notSigningIn() {
+        CountDownLatch waiting = signingIn;
+        signingIn = null;
+        if (waiting != null)
+            waiting.countDown();
+    }
+
     /** The session, waiting up to millis for one a sign-in at start is on its way to publishing.
      *
      *  The process is often started for a request: an app reopening a document it holds a grant for, right after

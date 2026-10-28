@@ -66,6 +66,8 @@ public class PeergosApp extends Application {
             // one, and the drive provider failing to start is no reason to kill the app.
             // Not Throwable, which would swallow an out of memory error too
             Log.w(TAG, "DocumentsProvider mount bootstrap failed", e);
+            // the saved mount will not sign in, so a request waiting for it is answered now
+            PeergosSession.notSigningIn();
         }
     }
 
