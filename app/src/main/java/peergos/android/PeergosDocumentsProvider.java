@@ -166,7 +166,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     @Override
     public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal)
             throws FileNotFoundException {
-        boolean wantsWrite = mode.indexOf('w') >= 0 || mode.indexOf('a') >= 0;
+        // Android checks the caller's write grant only for a mode with a 'w' in it, so writing
+        // for any other mode, such as a bare "a", would let an app holding a read-only grant
+        // change the file. Take only the modes ParcelFileDescriptor accepts, and write only
+        // for those that write.
+        boolean wantsWrite = (ParcelFileDescriptor.parseMode(mode) & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0;
         return wantsWrite
                 ? openWritable(documentId, mode, signal)
                 : openForRead(documentId, signal);
