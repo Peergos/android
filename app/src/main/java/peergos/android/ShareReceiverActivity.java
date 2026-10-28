@@ -9,6 +9,7 @@ import android.provider.DocumentsContract;
 import android.util.Log;
 import android.widget.Toast;
 
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -122,6 +123,10 @@ public class ShareReceiverActivity extends Activity {
                 total += n;
             }
             out.flush();
+            // A close cannot fail, so this is where a target that uploads, as Peergos does, says whether that
+            // worked: without it a share whose upload failed was reported as saved.
+            if (out instanceof FileOutputStream)
+                ((FileOutputStream) out).getFD().sync();
             return total;
         }
     }
