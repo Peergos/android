@@ -474,6 +474,22 @@ public class CalendarFieldsEndToEndTest {
         assertEquals(0, sync());
     }
 
+    @Test
+    public void aSeriesLengthAsThePhonesCalendarAppsStoreIt() throws Exception {
+        put("recurring/s.ics", utcSeries("s", "RRULE:FREQ=WEEKLY\r\n"));
+        sync();
+        // AOSP Calendar and Etar keep a timed series' length as P<seconds>S, not RFC 5545's PT2H
+        edit("s.ics", v -> {
+            v.put(CalendarContract.Events.TITLE, "s, two hours now");
+            v.putNull(CalendarContract.Events.DTEND);
+            v.put(CalendarContract.Events.DURATION, "P7200S");
+        });
+        sync();
+        String file = read("s.ics");
+        assertTrue("two hours on the phone did not reach the file: " + file, file.contains("DTEND:20260105T110000Z"));
+        assertEquals(0, sync());
+    }
+
     // ---- helpers ----
 
     private static long at(String instant) {
