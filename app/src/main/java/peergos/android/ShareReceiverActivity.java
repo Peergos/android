@@ -20,15 +20,19 @@ public class ShareReceiverActivity extends Activity {
 
     private static final String STATE_SOURCE = "peergos.share.source";
     private static final String STATE_NAME = "peergos.share.name";
+    private static final String STATE_PICKER = "peergos.share.picker";
 
     private Uri sourceUri;
     private String displayName;
+    /** Whether the picker is up: one recreated while waiting to open it has to open it itself. */
+    private boolean pickerOpen;
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (sourceUri != null) outState.putParcelable(STATE_SOURCE, sourceUri);
         if (displayName != null) outState.putString(STATE_NAME, displayName);
+        outState.putBoolean(STATE_PICKER, pickerOpen);
     }
 
     @Override
@@ -38,7 +42,8 @@ public class ShareReceiverActivity extends Activity {
         if (savedInstanceState != null) {
             sourceUri = savedInstanceState.getParcelable(STATE_SOURCE);
             displayName = savedInstanceState.getString(STATE_NAME);
-            if (sourceUri != null) return;
+            pickerOpen = savedInstanceState.getBoolean(STATE_PICKER);
+            if (sourceUri != null && pickerOpen) return;
         }
 
         Intent in = getIntent();
@@ -80,6 +85,7 @@ public class ShareReceiverActivity extends Activity {
                     return;
                 if (rootDoc != null)
                     create.putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootDoc);
+                pickerOpen = true;
                 startActivityForResult(create, REQUEST_CREATE);
             });
         }, "PeergosShareSignIn").start();
