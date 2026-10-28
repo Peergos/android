@@ -209,11 +209,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         if (!parent.isWritable()) throw new FileNotFoundException("Read-only parent: " + parentId);
         Optional<FileWrapper> existingOpt = s.context.getByPath(documentId).join();
 
-        // POSIX-ish semantics: 'w' without 'a' truncates an existing file; 'a' (append) leaves
-        // the existing content alone. Missing files always get a zero-byte placeholder so
-        // every subsequent onWrite can use overwriteSection against a real FileWrapper.
+        // The modes as ParcelFileDescriptor reads them: "w", "wt" and "rwt" truncate, "rw"
+        // opens the existing content read-write, and 'a' appends to it. Taking every 'w' for
+        // a truncate emptied a file an app opened "rw" to edit in place. Missing files always
+        // get a zero-byte placeholder so every subsequent onWrite can use overwriteSection
+        // against a real FileWrapper.
         boolean appendMode = mode.indexOf('a') >= 0;
-        boolean truncateMode = !appendMode && mode.indexOf('w') >= 0;
+        boolean truncateMode = mode.equals("w") || mode.indexOf('t') >= 0;
         FileWrapper fw;
         try {
             if (existingOpt.isEmpty()) {
@@ -265,7 +267,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
-                    new PeergosWriteProxyCallback(fw, fw.getSize(), parentId, name, s, thread,
+                    new PeergosWriteProxyCallback(fw, fw.getSize(), appendMode ? fw.getSize() : 0, parentId, name, s, thread,
                             appCtx, appCtx.getContentResolver(), streamingPool, handle, staging,
                             needsPrefill, stream),
                     new Handler(thread.getLooper()));
@@ -479,6 +481,9 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final File staging;
         private final FileWrapper fw;
         private final boolean needsPrefill;
+        /** Where the writer's offset 0 lands: the end of the existing content for an append,
+         *  which the proxy fd cannot express itself. */
+        private final long appendBase;
         /** Set for a file this open created: it starts empty, so its bytes can go straight
          *  out chunk by chunk as they arrive instead of being staged on disk first. */
         private final StreamingWriteBuffer stream;
@@ -500,13 +505,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private boolean dirty;
         private String writeError;
 
-        PeergosWriteProxyCallback(FileWrapper fw, long size, String parentId, String name,
+        PeergosWriteProxyCallback(FileWrapper fw, long size, long appendBase, String parentId, String name,
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
                                   UploadProgressNotifier.Handle handle, File staging,
                                   boolean needsPrefill, StreamingWriteBuffer stream) {
             this.fw = fw;
             this.size = size;
+            this.appendBase = appendBase;
             this.parentId = parentId;
             this.name = name;
             this.s = s;
@@ -578,6 +584,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
+            offset += appendBase;
             try {
                 if (stream != null) {
                     // Blocks while the window is full: that backpressure is what paces the
