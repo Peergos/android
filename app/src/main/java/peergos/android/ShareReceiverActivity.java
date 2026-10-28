@@ -66,10 +66,23 @@ public class ShareReceiverActivity extends Activity {
         create.addCategory(Intent.CATEGORY_OPENABLE);
         create.setType(mimeType);
         create.putExtra(Intent.EXTRA_TITLE, displayName);
-        Uri rootDoc = peergosRootDocUri();
-        if (rootDoc != null)
-            create.putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootDoc);
-        startActivityForResult(create, REQUEST_CREATE);
+        // A share is often what starts the process, and the saved mount is then a second or two from signing in:
+        // the picker waits for it, or it opens wherever the device last saved rather than in Peergos.
+        new Thread(() -> {
+            try {
+                PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            Uri rootDoc = peergosRootDocUri();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed())
+                    return;
+                if (rootDoc != null)
+                    create.putExtra(DocumentsContract.EXTRA_INITIAL_URI, rootDoc);
+                startActivityForResult(create, REQUEST_CREATE);
+            });
+        }, "PeergosShareSignIn").start();
     }
 
     private static Uri peergosRootDocUri() {
