@@ -88,6 +88,20 @@ public class MountColdStartTest {
         PeergosSession.publish(user, network, crypto);
     }
 
+    @Test
+    public void aSignInThatWillNotHappenIsNotWaitedFor() throws Exception {
+        PeergosSession.clear();
+        PeergosSession.signingIn();
+        // as the app says when the saved mount's setup fails at start
+        PeergosSession.notSigningIn();
+        long start = System.currentTimeMillis();
+        try (Cursor c = query("/" + user.username)) {
+            Assert.assertNull(c);
+        }
+        Assert.assertTrue("waited for a sign-in that was not coming", System.currentTimeMillis() - start < 2_000);
+        PeergosSession.publish(user, network, crypto);
+    }
+
     private static Cursor query(String documentId) {
         ContentResolver resolver = InstrumentationRegistry.getInstrumentation().getTargetContext().getContentResolver();
         Uri doc = DocumentsContract.buildDocumentUri(DocumentsProviderBackend.AUTHORITY, documentId);
