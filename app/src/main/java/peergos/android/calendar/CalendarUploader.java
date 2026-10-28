@@ -495,7 +495,7 @@ public class CalendarUploader {
             return end;
         long start = values.getAsLong(CalendarContract.Events.DTSTART);
         return start + Optional.ofNullable(values.getAsString(CalendarContract.Events.DURATION))
-                .flatMap(ICal::parseDuration).map(Duration::toMillis).orElse(0L);
+                .flatMap(CalendarUploader::duration).map(Duration::toMillis).orElse(0L);
     }
 
     /** EXDATE or RDATE: written in the start's form if they differ from the file's, and taken
@@ -612,11 +612,35 @@ public class CalendarUploader {
         if (row.end != null)
             return row.end;
         if (row.duration != null) {
-            Optional<Duration> length = ICal.parseDuration(row.duration);
+            Optional<Duration> length = duration(row.duration);
             if (length.isPresent())
                 return row.start + length.get().toMillis();
         }
         return row.start + (row.allDay ? Duration.ofDays(1).toMillis() : Duration.ofHours(1).toMillis());
+    }
+
+    /**
+     * The provider's DURATION. RFC 5545 puts a T before the time units, and {@link ICal}
+     * reads only that form; the calendar apps on the phone store a timed series as the
+     * contract's own "P7200S", units straight after the P. Read as one hour, that series
+     * reached every other device an hour long.
+     */
+    static Optional<Duration> duration(String value) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("([+-])?P(?:(\\d+)W)?(?:(\\d+)D)?T?(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?")
+                .matcher(value.trim());
+        if (! m.matches() || value.trim().endsWith("P"))
+            return Optional.empty();
+        Duration d = Duration.ZERO
+                .plusDays(7L * number(m.group(2)) + number(m.group(3)))
+                .plusHours(number(m.group(4)))
+                .plusMinutes(number(m.group(5)))
+                .plusSeconds(number(m.group(6)));
+        return Optional.of("-".equals(m.group(1)) ? d.negated() : d);
+    }
+
+    private static long number(String group) {
+        return group == null ? 0 : Long.parseLong(group);
     }
 
     private void purge(long rowId) throws Exception {
