@@ -23,6 +23,7 @@ import android.util.Log;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -208,7 +209,7 @@ public class ContactMirror {
         List<String> kinds = new ArrayList<>(CARRIED_KINDS);
         if (hasPhoto)
             kinds.add(Photo.CONTENT_ITEM_TYPE);
-        String placeholders = String.join(",", java.util.Collections.nCopies(kinds.size(), "?"));
+        String placeholders = String.join(",", Collections.nCopies(kinds.size(), "?"));
         List<String> args = new ArrayList<>(List.of(Long.toString(rawContactId)));
         args.addAll(kinds);
         args.add(Integer.toString(Event.TYPE_BIRTHDAY));
