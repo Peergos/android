@@ -1,6 +1,7 @@
 package peergos.android.calendar;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -390,6 +391,34 @@ public class CalendarFieldsEndToEndTest {
     }
 
     // ---- colour, availability, privacy, status ----
+
+    @Test
+    public void aFieldClearedOnThePhoneIsClearedInTheFile() throws Exception {
+        put("2026/7/d.ics", event("d", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
+                + "DESCRIPTION:Agenda\r\nLOCATION:Room 1\r\n"));
+        sync();
+        assertEquals("Agenda", row("d.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+        edit("d.ics", v -> {
+            v.putNull(CalendarContract.Events.DESCRIPTION);
+            v.putNull(CalendarContract.Events.EVENT_LOCATION);
+        });
+        sync();
+        String file = read("d.ics");
+        assertFalse("the cleared description is still in the file: " + file, file.contains("DESCRIPTION:"));
+        assertFalse("the cleared location is still in the file: " + file, file.contains("LOCATION:"));
+        assertEquals(0, sync());
+    }
+
+    @Test
+    public void aFieldClearedInTheFileIsClearedOnThePhone() throws Exception {
+        put("2026/7/e.ics", event("e", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\nDESCRIPTION:Agenda\r\n"));
+        sync();
+        assertEquals("Agenda", row("e.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+        put("2026/7/e.ics", event("e", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"));
+        sync();
+        assertNull("the description cleared in the file is still on the phone",
+                row("e.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+    }
 
     @Test
     public void coloursComeAndGoBothWays() throws Exception {

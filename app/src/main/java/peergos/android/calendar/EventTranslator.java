@@ -112,8 +112,10 @@ public final class EventTranslator {
         ContentValues values = new ContentValues();
         values.put(CalendarContract.Events.CALENDAR_ID, calendarId);
         values.put(CalendarContract.Events.TITLE, unescape(event.value("SUMMARY").orElse("")));
-        event.value("DESCRIPTION").ifPresent(d -> values.put(CalendarContract.Events.DESCRIPTION, unescape(d)));
-        event.value("LOCATION").ifPresent(l -> values.put(CalendarContract.Events.EVENT_LOCATION, unescape(l)));
+        // Null when the file has none: the row is updated in place, and a column left out of
+        // the update keeps the text another client has since cleared.
+        values.put(CalendarContract.Events.DESCRIPTION, event.value("DESCRIPTION").map(EventTranslator::unescape).orElse(null));
+        values.put(CalendarContract.Events.EVENT_LOCATION, event.value("LOCATION").map(EventTranslator::unescape).orElse(null));
         values.put(CalendarContract.Events.DTSTART, from.get().toEpochMilli());
         values.put(CalendarContract.Events.STATUS, status(event));
         values.put(CalendarContract.Events.AVAILABILITY, availability(event));
