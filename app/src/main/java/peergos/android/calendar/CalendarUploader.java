@@ -252,7 +252,7 @@ public class CalendarUploader {
         String patched = ICalWriter.patch(existing, changes.lines, changes.removals);
         if (changes.define.isPresent())
             patched = ICalWriter.withTimeZone(patched, changes.define.get());
-        write(directory, row.syncId, withReminder(patched, row), row.id, faithful);
+        write(directory, row.syncId, withReminders(patched, row), row.id, faithful);
         return true;
     }
 
@@ -275,34 +275,35 @@ public class CalendarUploader {
         List<ICalWriter.Line> lines = new ArrayList<>(changes.lines);
         title.ifPresent(t -> lines.add(ICalWriter.text("SUMMARY", t)));
         lines.add(ICalWriter.text("X-OWNER", account.name));
-        String ics = withReminder(ICalWriter.create(uid, lines), row);
+        String ics = withReminders(ICalWriter.create(uid, lines), row);
         return changes.define.map(zone -> ICalWriter.withTimeZone(ics, zone)).orElse(ics);
     }
 
     /**
-     * The reminder as the phone now has it. Without this a reminder added or cleared in
+     * The reminders as the phone now has them. Without this a reminder added or cleared in
      * the platform calendar would never reach the file, and the next download pass — which
-     * writes the Reminders row from the file — would quietly undo it.
+     * writes the Reminders rows from the file — would quietly undo it.
      */
-    private String withReminder(String ics, Row row) throws Exception {
-        return ICalWriter.withReminder(ics, reminderOf(row.id), row.title);
+    private String withReminders(String ics, Row row) throws Exception {
+        return ICalWriter.withReminders(ics, remindersOf(row.id), row.title);
     }
 
-    /** The earliest alarm the phone would ring for this event, in minutes before the start. */
-    private Optional<Integer> reminderOf(long rowId) throws Exception {
+    /** Every alarm the phone would ring for this event, in minutes before the start. */
+    private List<Integer> remindersOf(long rowId) throws Exception {
+        List<Integer> out = new ArrayList<>();
         try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
                 new String[]{CalendarContract.Reminders.MINUTES},
                 CalendarContract.Reminders.EVENT_ID + "=?",
                 new String[]{Long.toString(rowId)},
-                CalendarContract.Reminders.MINUTES + " DESC")) {
+                CalendarContract.Reminders.MINUTES + " ASC")) {
             while (cursor != null && cursor.moveToNext()) {
                 // A negative value is the provider's "use the calendar's default", which
                 // names no time of its own to write down.
-                if (! cursor.isNull(0) && cursor.getInt(0) >= 0)
-                    return Optional.of(cursor.getInt(0));
+                if (! cursor.isNull(0) && cursor.getInt(0) >= 0 && ! out.contains(cursor.getInt(0)))
+                    out.add(cursor.getInt(0));
             }
         }
-        return Optional.empty();
+        return out;
     }
 
     /** @param faithful whether the row now says everything about exclusions the file does,

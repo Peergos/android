@@ -96,7 +96,7 @@ public class FieldsTest {
         String out = ICalWriter.patch(ics, List.of(ICalWriter.text("SUMMARY", "Renamed")), List.of());
         Assert.assertTrue(out, out.contains("SUMMARY:Moved"));
         Assert.assertTrue(out, out.contains("SUMMARY:Renamed\r\nRRULE"));
-        String reminded = ICalWriter.withReminder(ics, Optional.of(10), "Weekly");
+        String reminded = ICalWriter.withReminders(ics, List.of(10), "Weekly");
         Assert.assertTrue(reminded, reminded.contains("RRULE:FREQ=WEEKLY\r\nBEGIN:VALARM"));
     }
 

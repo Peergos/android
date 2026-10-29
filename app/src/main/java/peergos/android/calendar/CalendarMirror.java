@@ -190,7 +190,7 @@ public class CalendarMirror {
                 eventId = inserted == null ? -1 : ContentUris.parseId(inserted);
             }
             if (eventId >= 0) {
-                syncReminder(eventId, translated.get().reminderMinutes(), known);
+                syncReminders(eventId, translated.get().reminders(), known);
                 syncAttendees(eventId, translated.get().attendees(), known);
                 insertOverrides(eventId, object.name, etag, translated.get().overrides());
             }
@@ -228,7 +228,7 @@ public class CalendarMirror {
             values.put(CalendarContract.Events.SYNC_DATA1, etag);
             Uri inserted = provider.insert(asSyncAdapter(CalendarContract.Events.CONTENT_URI), values);
             if (inserted != null) {
-                syncReminder(ContentUris.parseId(inserted), override.reminderMinutes(), false);
+                syncReminders(ContentUris.parseId(inserted), override.reminders(), false);
                 syncAttendees(ContentUris.parseId(inserted), override.attendees(), false);
             }
         }
@@ -293,18 +293,18 @@ public class CalendarMirror {
      * shown by whatever the user's calendar app is. Rewritten wholesale rather than
      * merged, so an alarm removed in Peergos stops ringing here too.
      */
-    private void syncReminder(long eventId, Optional<Integer> minutes, boolean known) throws Exception {
+    private void syncReminders(long eventId, List<Integer> reminders, boolean known) throws Exception {
         // A row inserted a moment ago has no reminders to clear.
         if (known)
             provider.delete(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
                     CalendarContract.Reminders.EVENT_ID + "=?", new String[]{Long.toString(eventId)});
-        if (minutes.isEmpty())
-            return;
-        ContentValues values = new ContentValues();
-        values.put(CalendarContract.Reminders.EVENT_ID, eventId);
-        values.put(CalendarContract.Reminders.MINUTES, minutes.get());
-        values.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
-        provider.insert(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI), values);
+        for (int minutes : reminders) {
+            ContentValues values = new ContentValues();
+            values.put(CalendarContract.Reminders.EVENT_ID, eventId);
+            values.put(CalendarContract.Reminders.MINUTES, minutes);
+            values.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
+            provider.insert(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI), values);
+        }
     }
 
     /** The row id of an event we have already written, or -1 if it has gone. */

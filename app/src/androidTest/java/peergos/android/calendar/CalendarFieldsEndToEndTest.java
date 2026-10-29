@@ -272,6 +272,31 @@ public class CalendarFieldsEndToEndTest {
     // ---- attendees ----
 
     @Test
+    public void everyAlarmIsAReminderAndEveryReminderAnAlarm() throws Exception {
+        put("2026/7/r.ics", event("r", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
+                + "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n"
+                + "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-P1D\r\nEND:VALARM\r\n"));
+        sync();
+        long id = rowId("r.ics");
+        assertEquals(List.of(10, 1440), reminders(id));
+
+        // a third added on the phone, and the event touched as a calendar app does
+        ContentValues reminder = new ContentValues();
+        reminder.put(CalendarContract.Reminders.EVENT_ID, id);
+        reminder.put(CalendarContract.Reminders.MINUTES, 60);
+        reminder.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
+        assertNotNull(context.getContentResolver().insert(CalendarContract.Reminders.CONTENT_URI, reminder));
+        edit("r.ics", v -> v.put(CalendarContract.Events.TITLE, "r touched"));
+        sync();
+        String file = read("r.ics");
+        for (String trigger : List.of("TRIGGER:-PT10M", "TRIGGER:-PT60M", "TRIGGER:-PT1440M"))
+            assertTrue("lost " + trigger + " from " + file, file.contains(trigger));
+        assertEquals(file, 3, file.split("BEGIN:VALARM", -1).length - 1);
+        assertEquals(0, sync());
+        assertEquals(List.of(10, 60, 1440), reminders(id));
+    }
+
+    @Test
     public void attendeesReachThePhoneAndComeBack() throws Exception {
         put("2026/7/m.ics", event("m", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
                 + "ORGANIZER;CN=Alice:mailto:alice@example.com\r\n"
@@ -586,6 +611,18 @@ public class CalendarFieldsEndToEndTest {
         values.put(CalendarContract.Events.DTEND, instance + HOUR);
         values.put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CANCELED);
         assertNotNull(context.getContentResolver().insert(CalendarContract.Events.CONTENT_URI, values));
+    }
+
+    private List<Integer> reminders(long eventId) throws Exception {
+        List<Integer> out = new ArrayList<>();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
+                new String[]{CalendarContract.Reminders.MINUTES},
+                CalendarContract.Reminders.EVENT_ID + "=?", new String[]{Long.toString(eventId)},
+                CalendarContract.Reminders.MINUTES + " ASC")) {
+            while (cursor != null && cursor.moveToNext())
+                out.add(cursor.getInt(0));
+        }
+        return out;
     }
 
     private long rowId(String name) throws Exception {
