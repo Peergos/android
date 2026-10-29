@@ -13,6 +13,8 @@ import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.ContactsContract;
+import android.provider.ContactsContract.CommonDataKinds.Im;
+import android.provider.ContactsContract.CommonDataKinds.Event;
 import android.provider.ContactsContract.CommonDataKinds.Phone;
 import android.provider.ContactsContract.CommonDataKinds.StructuredName;
 import android.provider.ContactsContract.Data;
@@ -297,6 +299,47 @@ public class ContactSyncEndToEndTest {
         assertEquals("and the local edit is kept as a second contact: " + describe(), 2, contactCount());
         assertTrue("the copy says where it came from: " + describe(),
                 describe().contains("edited on this device"));
+    }
+
+    @Test
+    public void aRemoteChangeKeepsWhatOnlyThePhoneHolds() throws Exception {
+        App contacts = App.init(session, "contacts").join();
+        contacts.writeInternal(PathUtil.get("App.config"),
+                "{\"addressbooks\":[{\"name\":\"Work\",\"directory\":\"work\"}]}"
+                        .getBytes(StandardCharsets.UTF_8), null).join();
+        contacts.writeInternal(PathUtil.get("work/addressbook.inf"),
+                "{\"name\":\"Work\"}".getBytes(StandardCharsets.UTF_8), null).join();
+        contacts.writeInternal(PathUtil.get("work/carol.vcf"),
+                card("carol", "Carol", "TEL;TYPE=CELL:+441111\r\n").getBytes(StandardCharsets.UTF_8), null).join();
+        new ContactMirror(provider, account, store()).sync();
+        long rawContactId = idOf("work/carol.vcf");
+
+        // An IM address and an anniversary: kinds a card from Peergos never carries, so they
+        // exist on the phone alone. Written as the sync adapter, so nothing is pending upload.
+        ContentValues im = new ContentValues();
+        im.put(Data.RAW_CONTACT_ID, rawContactId);
+        im.put(Data.MIMETYPE, Im.CONTENT_ITEM_TYPE);
+        im.put(Im.DATA, "carol@chat.example");
+        im.put(Im.PROTOCOL, Im.PROTOCOL_JABBER);
+        assertNotNull(context.getContentResolver().insert(asSyncAdapter(Data.CONTENT_URI), im));
+        ContentValues anniversary = new ContentValues();
+        anniversary.put(Data.RAW_CONTACT_ID, rawContactId);
+        anniversary.put(Data.MIMETYPE, Event.CONTENT_ITEM_TYPE);
+        anniversary.put(Event.START_DATE, "2010-06-01");
+        anniversary.put(Event.TYPE, Event.TYPE_ANNIVERSARY);
+        assertNotNull(context.getContentResolver().insert(asSyncAdapter(Data.CONTENT_URI), anniversary));
+
+        // the card changes in Peergos
+        contacts.writeInternal(PathUtil.get("work/carol.vcf"),
+                card("carol", "Caroline", "TEL;TYPE=CELL:+442222\r\n").getBytes(StandardCharsets.UTF_8), null).join();
+        new ContactMirror(provider, account, store()).sync();
+
+        assertEquals("Caroline", displayNameOf("work/carol.vcf"));
+        assertEquals("+442222", numberOf("work/carol.vcf"));
+        assertEquals("the IM address only the phone had is gone", "carol@chat.example",
+                valueOf(rawContactId, Im.CONTENT_ITEM_TYPE, Im.DATA));
+        assertEquals("the anniversary only the phone had is gone", "2010-06-01",
+                valueOf(rawContactId, Event.CONTENT_ITEM_TYPE, Event.START_DATE));
     }
 
     private long idOf(String sourceId) throws Exception {
