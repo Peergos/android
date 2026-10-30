@@ -14,8 +14,6 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -139,29 +137,6 @@ public class AndroidPoster implements HttpPoster {
                 conn.disconnect();
         }
         return res;
-    }
-
-    @Override
-    public CompletableFuture<byte[]> postMultipart(String url, List<byte[]> files, int timeoutMillis) {
-        try {
-            Map<String, String> headers = new HashMap<>();
-            if (basicAuth.isPresent())
-                headers.put("Authorization", basicAuth.get());
-            Multipart mPost = new Multipart(buildURL(url).toString(), "UTF-8", headers, timeoutMillis);
-            int i = 0;
-            for (byte[] file : files) {
-                String fieldName = "file" + i++;
-                mPost.addFilePart(fieldName, new NamedStreamable.ByteArrayWrapper(Optional.of(fieldName), file));
-            }
-            return CompletableFuture.completedFuture(mPost.finish().getBytes());
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    @Override
-    public CompletableFuture<byte[]> postMultipart(String url, List<byte[]> files) {
-        return postMultipart(url, files, -1);
     }
 
     @Override
