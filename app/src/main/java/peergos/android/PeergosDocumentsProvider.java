@@ -271,7 +271,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
-                    new PeergosWriteProxyCallback(fw, fw.getSize(), appendMode ? fw.getSize() : 0, parentId, name, s, thread,
+                    new PeergosWriteProxyCallback(fw, fw.getSize(), appendMode, parentId, name, s, thread,
                             appCtx, appCtx.getContentResolver(), streamingPool, handle, staging,
                             needsPrefill, stream),
                     new Handler(thread.getLooper()));
@@ -486,9 +486,9 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private File staging;
         private FileWrapper fw;
         private boolean needsPrefill;
-        /** Where the writer's offset 0 lands: the end of the existing content for an append,
-         *  which the proxy fd cannot express itself. */
-        private final long appendBase;
+        /** An append: every write goes at the current end, as O_APPEND would have it, whatever
+         *  offset the writer gives, since the proxy fd cannot carry the flag itself. */
+        private final boolean append;
         /** Set for a file this open created: it starts empty, so its bytes can go straight
          *  out chunk by chunk as they arrive instead of being staged on disk first. */
         private StreamingWriteBuffer stream;
@@ -510,14 +510,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private boolean dirty;
         private String writeError;
 
-        PeergosWriteProxyCallback(FileWrapper fw, long size, long appendBase, String parentId, String name,
+        PeergosWriteProxyCallback(FileWrapper fw, long size, boolean append, String parentId, String name,
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
                                   UploadProgressNotifier.Handle handle, File staging,
                                   boolean needsPrefill, StreamingWriteBuffer stream) {
             this.fw = fw;
             this.size = size;
-            this.appendBase = appendBase;
+            this.append = append;
             this.parentId = parentId;
             this.name = name;
             this.s = s;
@@ -592,7 +592,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
-            offset += appendBase;
+            if (append)
+                offset = size;
             try {
                 if (stream != null) {
                     // Blocks while the window is full: that backpressure is what paces the
