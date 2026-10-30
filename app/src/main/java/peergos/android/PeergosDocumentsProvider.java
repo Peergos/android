@@ -166,7 +166,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     @Override
     public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal)
             throws FileNotFoundException {
-        boolean wantsWrite = mode.indexOf('w') >= 0 || mode.indexOf('a') >= 0;
+        // Android checks the caller's write grant only for a mode with a 'w' in it, so writing
+        // for any other mode, such as a bare "a", would let an app holding a read-only grant
+        // change the file. Take only the modes ParcelFileDescriptor accepts, and write only
+        // for those that write.
+        boolean wantsWrite = (ParcelFileDescriptor.parseMode(mode) & ParcelFileDescriptor.MODE_WRITE_ONLY) != 0;
         return wantsWrite
                 ? openWritable(documentId, mode, signal)
                 : openForRead(documentId, signal);
@@ -209,11 +213,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         if (!parent.isWritable()) throw new FileNotFoundException("Read-only parent: " + parentId);
         Optional<FileWrapper> existingOpt = s.context.getByPath(documentId).join();
 
-        // POSIX-ish semantics: 'w' without 'a' truncates an existing file; 'a' (append) leaves
-        // the existing content alone. Missing files always get a zero-byte placeholder so
-        // every subsequent onWrite can use overwriteSection against a real FileWrapper.
+        // The modes as ParcelFileDescriptor reads them: "w", "wt" and "rwt" truncate, "rw"
+        // opens the existing content read-write, and 'a' appends to it. Taking every 'w' for
+        // a truncate emptied a file an app opened "rw" to edit in place. Missing files always
+        // get a zero-byte placeholder so every subsequent onWrite can use overwriteSection
+        // against a real FileWrapper.
         boolean appendMode = mode.indexOf('a') >= 0;
-        boolean truncateMode = !appendMode && mode.indexOf('w') >= 0;
+        boolean truncateMode = mode.equals("w") || mode.indexOf('t') >= 0;
         FileWrapper fw;
         try {
             if (existingOpt.isEmpty()) {
@@ -265,7 +271,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         try {
             return sm.openProxyFileDescriptor(
                     ParcelFileDescriptor.MODE_READ_WRITE,
-                    new PeergosWriteProxyCallback(fw, fw.getSize(), parentId, name, s, thread,
+                    new PeergosWriteProxyCallback(fw, fw.getSize(), appendMode, parentId, name, s, thread,
                             appCtx, appCtx.getContentResolver(), streamingPool, handle, staging,
                             needsPrefill, stream),
                     new Handler(thread.getLooper()));
@@ -479,6 +485,9 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private final File staging;
         private final FileWrapper fw;
         private final boolean needsPrefill;
+        /** An append: every write goes at the current end, as O_APPEND would have it, whatever
+         *  offset the writer gives, since the proxy fd cannot carry the flag itself. */
+        private final boolean append;
         /** Set for a file this open created: it starts empty, so its bytes can go straight
          *  out chunk by chunk as they arrive instead of being staged on disk first. */
         private final StreamingWriteBuffer stream;
@@ -500,13 +509,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         private boolean dirty;
         private String writeError;
 
-        PeergosWriteProxyCallback(FileWrapper fw, long size, String parentId, String name,
+        PeergosWriteProxyCallback(FileWrapper fw, long size, boolean append, String parentId, String name,
                                   Session s, HandlerThread thread, Context appCtx,
                                   ContentResolver cr, ExecutorService postReleasePool,
                                   UploadProgressNotifier.Handle handle, File staging,
                                   boolean needsPrefill, StreamingWriteBuffer stream) {
             this.fw = fw;
             this.size = size;
+            this.append = append;
             this.parentId = parentId;
             this.name = name;
             this.s = s;
@@ -578,6 +588,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
+            if (append)
+                offset = size;
             try {
                 if (stream != null) {
                     // Blocks while the window is full: that backpressure is what paces the
