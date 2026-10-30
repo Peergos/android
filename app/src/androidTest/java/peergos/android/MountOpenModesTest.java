@@ -13,9 +13,12 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URL;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -90,6 +93,50 @@ public class MountOpenModesTest {
         write(path, "w", "start");
         assertSettlesTo(path, "start");
         write(path, "wa", " and end");
+        assertSettlesTo(path, "start and end");
+    }
+
+    @Test
+    public void anEditInPlaceKeepsTheRest() throws Exception {
+        String path = "/" + user.username + "/modes-rw.txt";
+        write(path, "w", "0123456789");
+        assertSettlesTo(path, "0123456789");
+        // read back through "rw" and close without writing: nothing is lost
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "rw");
+             FileInputStream in = new FileInputStream(pfd.getFileDescriptor())) {
+            assertEquals("0123456789", new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertSettlesTo(path, "0123456789");
+        // one byte in the middle: the rest stays
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "rw");
+             FileChannel out = new FileOutputStream(pfd.getFileDescriptor()).getChannel()) {
+            out.position(4);
+            out.write(ByteBuffer.wrap("X".getBytes(StandardCharsets.UTF_8)));
+        }
+        assertSettlesTo(path, "0123X56789");
+    }
+
+    @Test
+    public void aTruncatingOpenEmptiesTheFile() throws Exception {
+        String path = "/" + user.username + "/modes-wt.txt";
+        write(path, "w", "something long");
+        assertSettlesTo(path, "something long");
+        write(path, "wt", "short");
+        assertSettlesTo(path, "short");
+    }
+
+    /** As a writer that treats an append fd as one: it seeks to the end first, and the write
+     *  must land there, not at twice the size. */
+    @Test
+    public void anAppendAfterSeekingToTheEndLandsAtTheEnd() throws Exception {
+        String path = "/" + user.username + "/modes-seek.txt";
+        write(path, "w", "start");
+        assertSettlesTo(path, "start");
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "wa");
+             FileChannel out = new FileOutputStream(pfd.getFileDescriptor()).getChannel()) {
+            out.position(out.size());
+            out.write(ByteBuffer.wrap(" and end".getBytes(StandardCharsets.UTF_8)));
+        }
         assertSettlesTo(path, "start and end");
     }
 
