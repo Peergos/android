@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -175,6 +177,43 @@ public class AndroidPartialCopyTest {
             Assert.assertEquals("move " + moveSupported, expected, tree(other));
             Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
         }
+    }
+
+    @Test
+    public void aFileTheProviderWouldNameAfterItsContent() throws Exception {
+        for (boolean moveSupported : List.of(true, false)) {
+            reset(moveSupported);
+            SyncState state = new JdbcTreeState(":memory:");
+            // a zip inside, under an extension in capitals: read by its first bytes it is a zip, and a provider adds
+            // .zip to a name asked for as one that does not end in it
+            byte[] data = ("PK\u0003\u0004" + new String(randomText(4096, 3))).getBytes();
+            Files.write(otherRoot.resolve("Report.DOCX"), data);
+            sync(state);
+            Map<String, String> expected = Map.of("Report.DOCX", new String(data));
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            sync(state);
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            Assert.assertEquals("move " + moveSupported, expected, tree(other));
+            Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
+        }
+    }
+
+    /** A name the storage cannot hold is skipped and reported, and the rest of the folder still syncs. */
+    @Test
+    public void aNameTheStorageCannotHoldIsSkipped() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.write(otherRoot.resolve("a:b.txt"), "colon".getBytes());
+        Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
+        List<String> log = Collections.synchronizedList(new ArrayList<>());
+        DirectorySync.syncDir(device, other, true, true, null, null, state, 32, 5,
+                Files.createTempDirectory(ctx.getCacheDir().toPath(), "sync-state"), crypto, () -> false, log::add);
+        Map<String, String> onDevice = tree(device);
+        Assert.assertEquals(log.toString(), "after it", onDevice.get("c.txt"));
+        Assert.assertFalse(onDevice.containsKey("a_b.txt"));
+        Assert.assertFalse(onDevice.containsKey("a:b.txt"));
+        Assert.assertTrue(log.toString(), log.stream().anyMatch(line -> line.contains("skipped")
+                && line.contains("its storage named it a_b.txt")));
     }
 
     @Test

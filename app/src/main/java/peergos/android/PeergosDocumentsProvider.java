@@ -880,7 +880,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     }
 
     private Session sessionOrThrow() throws FileNotFoundException {
-        Optional<UserContext> ctx = PeergosSession.context();
+        Optional<UserContext> ctx;
+        try {
+            ctx = PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FileNotFoundException("Interrupted waiting for Peergos to sign in");
+        }
         Optional<NetworkAccess> net = PeergosSession.network();
         Optional<Crypto> crypto = PeergosSession.crypto();
         if (ctx.isEmpty() || net.isEmpty() || crypto.isEmpty())

@@ -57,6 +57,13 @@ public class StreamingForegroundService extends Service {
         return START_NOT_STICKY;
     }
 
+    /** The day's allowance for data sync is used up, and the system wants the service gone. The open files stay
+     *  open, though reads through them may stall once the process is in the background. */
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        stopSelf();
+    }
+
     @Override
     public IBinder onBind(Intent intent) { return null; }
 

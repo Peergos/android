@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Locale;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Objects;
@@ -342,13 +343,33 @@ public class TestDocumentsProvider extends ContentProvider {
 
     private String createChild(String parentId, String mime, String displayName) throws IOException {
         File parent = fileFor(parentId);
-        File child = new File(parent, displayName);
+        File child = new File(parent, platformName(mime, displayName));
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
             if (!child.mkdir() && !child.isDirectory()) throw new IOException("mkdir failed: " + child);
         } else {
             if (!child.createNewFile() && !child.exists()) throw new IOException("createNewFile failed: " + child);
         }
         return docIdFor(child);
+    }
+
+    /** The name the platform's own providers give a new document (FileUtils.buildValidFatFilename and
+     *  buildUniqueFile): a character a FAT volume can't hold becomes '_', and a name whose extension does not go
+     *  with the type asked for gets the type's extension added. */
+    static String platformName(String mime, String displayName) {
+        StringBuilder valid = new StringBuilder();
+        for (char c : displayName.toCharArray())
+            valid.append(c < 0x20 || c == 0x7f || "\"*/:<>?\\|".indexOf(c) >= 0 ? '_' : c);
+        String name = valid.toString();
+        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime) || "application/octet-stream".equals(mime))
+            return name;
+        int dot = name.lastIndexOf('.');
+        String ext = dot < 0 ? null : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        String typeOfExt = ext == null ? null : types.getMimeTypeFromExtension(ext);
+        String extOfType = types.getExtensionFromMimeType(mime);
+        if (mime.equals(typeOfExt) || extOfType == null || extOfType.equals(ext))
+            return name;
+        return name + "." + extOfType;
     }
 
     private String rename(String docId, String displayName) throws IOException {

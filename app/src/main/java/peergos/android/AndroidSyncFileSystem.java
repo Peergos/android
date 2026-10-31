@@ -9,6 +9,7 @@ import android.media.ThumbnailUtils;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
+import android.webkit.MimeTypeMap;
 
 import androidx.documentfile.provider.DocumentFile;
 
@@ -28,6 +29,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -43,6 +45,7 @@ import peergos.server.sync.LocalFileSystem;
 import peergos.server.sync.StagedFileSystem;
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
+import peergos.server.sync.UnrepresentableNameException;
 import peergos.shared.Crypto;
 import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.user.fs.AsyncReader;
@@ -312,14 +315,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                 mkdirs(parentPath);
             }
             DocumentFile parent = getByPath(parentPath).orElseThrow(() -> new IllegalStateException("Absent dir: " + parentPath));
-            byte[] start = new byte[(int)Math.min(1024L, size)];
-            reader.readIntoArray(start, 0, start.length).join();
-            String mimeType = MimeTypes.calculateMimeType(start, filename);
-            if (mimeType.equals("text/plain") && ! filename.endsWith(".txt"))
-                mimeType = "application/octet-stream";
-            DocumentFile file = parent.createFile(mimeType, filename);
-            if (file == null)
-                throw new FileNotFoundException("Couldn't create local file: " + p);
+            DocumentFile file = createNamed(parent, filename);
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(file.getUri(), "w");
                  FileOutputStream fout = new FileOutputStream(pfd.getFileDescriptor())) {
                 long prefix = 0;
@@ -329,8 +325,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                     fout.write(buf, 0, zeroes);
                     prefix += zeroes;
                 }
-                long written = start.length;
-                fout.write(start);
+                long written = 0;
                 while (written < size) {
                     if (isCancelled.get())
                         throw new IllegalStateException("Download cancelled!");
@@ -485,6 +480,35 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                 }
             }
         });
+    }
+
+    /** A new empty file in dir, under exactly the name asked for.
+     *
+     *  A provider names a new document itself: it adds the type's extension to a name whose own extension does
+     *  not go with the type (Report.DOCX, read as a zip, became Report.DOCX.zip), and replaces characters its
+     *  storage can't hold (a:b.txt became a_b.txt). Everything after finds the file by its name - the copy being
+     *  put in place, the next sync - so a file under another name was lost to it, and the sync failed on it at
+     *  every pass. Asked for under the type its own name implies, a name is only changed for the second reason, or
+     *  for a file of that name that appeared meanwhile, which no name given here can get round: that file is
+     *  removed again, and the sync told what the storage did, which skips the file rather than stopping there. */
+    private static DocumentFile createNamed(DocumentFile dir, String name) throws IOException {
+        DocumentFile file = dir.createFile(typeOfName(name), name);
+        if (file == null)
+            throw new FileNotFoundException("Couldn't create local file: " + name);
+        if (! name.equals(file.getName())) {
+            String given = file.getName();
+            file.delete();
+            throw new UnrepresentableNameException("Couldn't create " + name + " in the synced folder: its storage named it " + given);
+        }
+        return file;
+    }
+
+    /** The type a provider gives a file by its name, which leaves it no reason to change the name. */
+    private static String typeOfName(String name) {
+        int dot = name.lastIndexOf('.');
+        String type = dot < 0 ? null
+                : MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substring(dot + 1).toLowerCase(Locale.ROOT));
+        return type != null ? type : "application/octet-stream";
     }
 
     private Bitmap generateImageThumbnail(Uri uri) throws IOException {

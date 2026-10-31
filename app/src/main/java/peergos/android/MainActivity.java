@@ -8,11 +8,9 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.DownloadManager;
 import android.app.ProgressDialog;
-import android.content.BroadcastReceiver;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.provider.DocumentsContract;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -229,8 +227,12 @@ public class MainActivity extends AppCompatActivity {
     ContentAddressedStorage localDht;
     CoreNode core;
     ActivityResultLauncher requestPermissions;
-    // requested on the http server thread, completed on the ui thread
-    volatile CompletableFuture<String> chosenHostDir;
+    // requested on the http server thread, completed on the ui thread, by whichever activity the picker's answer
+    // comes back to: the one that asked may have been recreated meanwhile
+    static volatile CompletableFuture<String> chosenHostDir;
+    // The activity in front. The server outlives activities - a theme or language change, split screen, recreates
+    // this one under it - so it asks this rather than the one it was started from, which is gone.
+    private static volatile MainActivity current;
     // a dialog can only go up while this activity is on screen
     private volatile boolean resumed = false;
     // the calendar and contacts are only started when the user asks for them, so that is when
@@ -255,6 +257,13 @@ public class MainActivity extends AppCompatActivity {
     private static ValueCallback<Uri[]> mUploadMessageArr;
 
     private static final int REQUEST_ACTION_OPEN_DOCUMENT_TREE = 255;
+
+    /** A folder chosen by the user, asked for in the activity in front: with none, nobody can be asked, which is
+     *  what an empty answer says. */
+    private static CompletableFuture<String> chooseDirInCurrentActivity() {
+        MainActivity activity = current;
+        return activity == null ? CompletableFuture.completedFuture("") : activity.chooseDirToAccess();
+    }
 
     private CompletableFuture<String> chooseDirToAccess() {
         CompletableFuture<String> res = new CompletableFuture<>();
@@ -535,6 +544,7 @@ public class MainActivity extends AppCompatActivity {
         // loaded, three screens before the first one that meant anything.
         SplashScreen splash = SplashScreen.installSplashScreen(this);
         super.onCreate(savedInstanceState);
+        current = this;
         splash.setKeepOnScreenCondition(() -> ! firstPageShown);
         System.out.println("Peergos v1");
         AppLifecycleObserver appLifecycleObserver = new AppLifecycleObserver();
@@ -811,12 +821,10 @@ public class MainActivity extends AppCompatActivity {
         File downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
         request.setDestinationUri(Uri.fromFile(downloads.toPath().resolve(filename).toFile()));
         DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-        DownloadForegroundService.increment();
-        ContextCompat.startForegroundService(MainActivity.this, new Intent(MainActivity.this, DownloadForegroundService.class));
-        dm.enqueue(request);
+        // what it downloads is served from this process, which has to stay up until it is done
+        DownloadForegroundService.track(MainActivity.this, dm.enqueue(request));
 
         MainActivity.this.runOnUiThread(() -> Toast.makeText(getApplicationContext(), "Downloading...", Toast.LENGTH_SHORT).show());
-        ContextCompat.registerReceiver(MainActivity.this, onComplete, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     public class UploadHandler extends WebChromeClient {
@@ -913,6 +921,10 @@ public class MainActivity extends AppCompatActivity {
 
         // check if the chrome activity is a file choosing session
         if (requestCode == file_chooser_activity_code) {
+            // Gone when the system stopped the process while the picker was open: this is a new one, and the
+            // page that asked for files went with the old, so there is nobody to hand them to.
+            if (mUploadMessageArr == null)
+                return;
             if (resultCode == Activity.RESULT_OK && data != null) {
                 Uri[] results = null;
 
@@ -1001,17 +1013,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
-
-    BroadcastReceiver onComplete = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            Toast.makeText(getApplicationContext(),"Downloading Complete",Toast.LENGTH_SHORT).show();
-            DownloadForegroundService.decrement();
-            Intent stopIntent = new Intent(context, DownloadForegroundService.class);
-            stopIntent.setAction(DownloadForegroundService.ACTION_STOP);
-            ContextCompat.startForegroundService(context, stopIntent);
-        }
-    };
 
     DownloadListener downloadListener = (url, userAgent, contentDisposition, wrongMimetype, contentLength) -> downloadFile(Uri.parse(url));
 
@@ -1119,6 +1120,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        current = this;
         SyncPermission.CALENDAR.setAsker(calendarPermissionAsker);
         SyncPermission.CONTACTS.setAsker(contactsPermissionAsker);
         // a folder removed while the app is on screen never reaches start(), so let the count
@@ -1155,6 +1157,13 @@ public class MainActivity extends AppCompatActivity {
         if (SyncWorker.status.getStatus() == SyncStatus.ERROR)
             SyncWorker.retrySoon(this, Paths.get(getFilesDir().getAbsolutePath()));
         yubiKitManager.stopNfcDiscovery(this);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (current == this)
+            current = null;
+        super.onDestroy();
     }
 
     // ---- page bridge ----
@@ -1749,7 +1758,7 @@ public class MainActivity extends AppCompatActivity {
             Optional<UserService.LocalAppProperties> localAppProps = Optional.of(new UserService.LocalAppProperties(peergosDir, serverUrl));
             UserService server = new UserService(withoutS3, offlineBats, crypto, offlineCorenode, offlineAccounts,
                     httpSocial, pointerCache, admin, httpUsage, serverMessager, null,
-                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(this::chooseDirToAccess))), localAppProps,
+                    Optional.of(new SyncProperties(syncConfig, a.getPeergosDir(), syncer, Either.b(MainActivity::chooseDirInCurrentActivity))), localAppProps,
                     PeergosSession.mountHandler());
 
             InetSocketAddress localAPIAddress = new InetSocketAddress("localhost", port);
