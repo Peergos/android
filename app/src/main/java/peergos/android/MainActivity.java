@@ -1633,6 +1633,9 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e){}
             if (alreadyRunning)
                 return null;
+            // claimed before the server is up, so no other app can take the address the WebView tries first
+            if (! LoopbackForwarder.claim(port))
+                return null;
 
             // now start the server
             HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
