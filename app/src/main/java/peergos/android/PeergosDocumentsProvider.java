@@ -538,23 +538,31 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             if (raf != null) return raf;
             if (staging == null)
                 staging = File.createTempFile("peergos-write-", ".tmp", appCtx.getCacheDir());
-            raf = new RandomAccessFile(staging, "rw");
-            if (needsPrefill) {
-                if (fw == null) fw = lookup();
-                long remaining = size;
-                try (AsyncReader r = fw.getInputStream(s.network, s.crypto, size, p -> {}).join()) {
-                    byte[] buf = new byte[64 * 1024];
-                    while (remaining > 0) {
-                        int toRead = (int) Math.min(buf.length, remaining);
-                        int n = r.readIntoArray(buf, 0, toRead).join();
-                        if (n <= 0) break;
-                        raf.write(buf, 0, n);
-                        remaining -= n;
+            RandomAccessFile f = new RandomAccessFile(staging, "rw");
+            // only a staging file that is complete is kept: a prefill cut short is done again on the next call
+            try {
+                if (needsPrefill) {
+                    f.setLength(0);
+                    if (fw == null) fw = lookup();
+                    long remaining = size;
+                    try (AsyncReader r = fw.getInputStream(s.network, s.crypto, size, p -> {}).join()) {
+                        byte[] buf = new byte[64 * 1024];
+                        while (remaining > 0) {
+                            int toRead = (int) Math.min(buf.length, remaining);
+                            int n = r.readIntoArray(buf, 0, toRead).join();
+                            if (n <= 0) break;
+                            f.write(buf, 0, n);
+                            remaining -= n;
+                        }
                     }
+                    if (remaining > 0)
+                        throw new IOException("Short read staging " + name + ": " + remaining + " bytes missing");
                 }
-                if (remaining > 0)
-                    throw new IOException("Short read staging " + name + ": " + remaining + " bytes missing");
+            } catch (IOException | RuntimeException e) {
+                f.close();
+                throw e;
             }
+            raf = f;
             return raf;
         }
 
@@ -592,6 +600,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
 
         @Override
         public int onWrite(long offset, int len, byte[] data) throws ErrnoException {
+            if (writeError != null)
+                throw new ErrnoException("onWrite", OsConstants.EIO);
             if (append)
                 offset = size;
             try {
@@ -638,8 +648,14 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                 // The stream ends with this upload. Anything the writer adds after it
                 // revises a file that now exists, which is what staging is for.
                 stream.setEof();
-                uploadTask.get();
-                finishStreamedUpload(size);
+                try {
+                    uploadTask.get();
+                    finishStreamedUpload(size);
+                } catch (Exception e) {
+                    // the stream has ended, so nothing written from here could reach Peergos
+                    writeError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    throw e;
+                }
                 stream = null;
                 uploadTask = null;
                 // The wrapper from the open is the empty placeholder; staging looks the

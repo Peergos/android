@@ -27,7 +27,6 @@ import java.util.Random;
 import peergos.server.Main;
 import peergos.shared.Crypto;
 import peergos.shared.NetworkAccess;
-import peergos.shared.corenode.CoreNode;
 import peergos.shared.login.DeviceTokenStore;
 import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.user.HttpPoster;
@@ -65,7 +64,6 @@ public class MountFsyncTest {
         HttpPoster poster = new AndroidPoster(serverUrl, false,
                 Optional.empty(), Optional.of("peergos-android-test"));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
-        CoreNode core = NetworkAccess.buildDirectCorenode(poster);
         network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
                 5_000, crypto.hasher, false, DeviceTokenStore.inMemory()).join();
         String username = "mountfsync" + (System.currentTimeMillis() % 1_000_000);
@@ -141,6 +139,30 @@ public class MountFsyncTest {
             try {
                 out.getFD().sync();
                 fail("fsync reported the bytes safe, but nothing could store them");
+            } catch (IOException expected) {
+            }
+        }
+    }
+
+    /** A failed sync ended the new file's upload, so a write after it is an error, not bytes nothing will store */
+    @Test
+    public void aWriteAfterAFailedSyncIsAnError() throws Exception {
+        String folder = "fsync-after";
+        user.getUserRoot().join().mkdir(folder, network, false, user.mirrorBatId(), crypto).join();
+        String path = "/" + user.username + "/" + folder + "/after.txt";
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "w");
+             FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor())) {
+            out.write("first".getBytes(StandardCharsets.UTF_8));
+            user.getByPath("/" + user.username + "/" + folder).join().get()
+                    .remove(user.getUserRoot().join(), Paths.get(user.username, folder), user).join();
+            try {
+                out.getFD().sync();
+                fail("fsync reported the bytes safe, but nothing could store them");
+            } catch (IOException expected) {
+            }
+            try {
+                out.write("more".getBytes(StandardCharsets.UTF_8));
+                fail("a write after the failed sync was taken");
             } catch (IOException expected) {
             }
         }
