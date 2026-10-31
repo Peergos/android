@@ -410,7 +410,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         Optional<DocumentFile> target = getByPath(p);
         if (target.isEmpty() || ! target.get().exists() || ! target.get().isFile()) {
             // the first write creates it
-            mkdirs(dir);
+            createDirs(dir);
             return partial;
         }
         // copied into another folder first, so a copy cut short isn't taken for the start of the download. Renaming
@@ -514,12 +514,12 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
     /** A new empty file in dir, under exactly the name asked for.
      *
      *  A provider names a new document itself: it adds the type's extension to a name whose own extension does
-     *  not go with the type (Report.DOCX, read as a zip, became Report.DOCX.zip), and replaces characters its
-     *  storage can't hold (a:b.txt became a_b.txt). Everything after finds the file by its name - the copy being
-     *  put in place, the next sync - so a file under another name was lost to it, and the sync failed on it at
-     *  every pass. Asked for under the type its own name implies, a name is only changed for the second reason, or
-     *  for a file of that name that appeared meanwhile, which no name given here can get round: that file is
-     *  removed again, and the sync told what the storage did, which skips the file rather than stopping there. */
+     *  not go with the type (Report.DOCX, read as a zip, becomes Report.DOCX.zip), and replaces characters its
+     *  storage can't hold (a:b.txt becomes a_b.txt). Everything after finds the file by its name - the copy being
+     *  put in place, the next sync - so a file under another name would be lost to it. Asked for under the type its
+     *  own name implies, a name is only changed for the second reason, or for a file of that name that appeared
+     *  meanwhile, which no name given here can get round: that file is removed again, and the sync is told what the
+     *  storage did, so it skips the file. */
     private static DocumentFile createNamed(DocumentFile dir, String name) throws IOException {
         DocumentFile file = dir.createFile(typeOfName(name), name);
         if (file == null)

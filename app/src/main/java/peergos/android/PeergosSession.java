@@ -47,9 +47,9 @@ public final class PeergosSession {
     /** The session, waiting up to millis for one a sign-in at start is on its way to publishing.
      *
      *  The process is often started for a request: an app reopening a document it holds a grant for, right after
-     *  Peergos' process was stopped. Answered "not signed in" while the mount was a second or two from being,
-     *  some apps took the document for gone and dropped it. Waited for once: a sign-in that has not published
-     *  in that time has failed, and later requests are answered at once. */
+     *  Peergos' process was stopped. Answered "not signed in" while the mount is a second or two from being, some
+     *  apps take the document for gone and drop it. Waited for once: a sign-in that has not published in that time
+     *  has failed, and later requests are answered at once. */
     public static Optional<UserContext> awaitContext(long millis) throws InterruptedException {
         CountDownLatch waiting = signingIn;
         if (context == null && waiting != null) {
