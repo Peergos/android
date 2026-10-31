@@ -213,11 +213,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         if (!parent.isWritable()) throw new FileNotFoundException("Read-only parent: " + parentId);
         Optional<FileWrapper> existingOpt = s.context.getByPath(documentId).join();
 
-        // The modes as ParcelFileDescriptor reads them: "w", "wt" and "rwt" truncate, "rw"
-        // opens the existing content read-write, and 'a' appends to it. Taking every 'w' for
-        // a truncate emptied a file an app opened "rw" to edit in place. Missing files always
-        // get a zero-byte placeholder so every subsequent onWrite can use overwriteSection
-        // against a real FileWrapper.
+        // "wt" and "rwt" truncate, and so does "w", by choice: ParcelFileDescriptor no longer
+        // reads a truncate into it, but a writer through openOutputStream means a new file by
+        // it. "rw" opens the existing content to edit in place, and 'a' appends to it. Missing
+        // files always get a zero-byte placeholder so every subsequent onWrite can use
+        // overwriteSection against a real FileWrapper.
         boolean appendMode = mode.indexOf('a') >= 0;
         boolean truncateMode = mode.equals("w") || mode.indexOf('t') >= 0;
         FileWrapper fw;
