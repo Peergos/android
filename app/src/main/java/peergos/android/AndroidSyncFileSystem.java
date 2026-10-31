@@ -45,6 +45,7 @@ import peergos.server.sync.LocalFileSystem;
 import peergos.server.sync.StagedFileSystem;
 import peergos.server.sync.SyncFilesystem;
 import peergos.server.sync.SyncState;
+import peergos.server.sync.UnrepresentableNameException;
 import peergos.shared.Crypto;
 import peergos.shared.crypto.hash.PublicKeyHash;
 import peergos.shared.user.fs.AsyncReader;
@@ -489,7 +490,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
      *  put in place, the next sync - so a file under another name was lost to it, and the sync failed on it at
      *  every pass. Asked for under the type its own name implies, a name is only changed for the second reason, or
      *  for a file of that name that appeared meanwhile, which no name given here can get round: that file is
-     *  removed again, and the sync told what the storage did. */
+     *  removed again, and the sync told what the storage did, which skips the file rather than stopping there. */
     private static DocumentFile createNamed(DocumentFile dir, String name) throws IOException {
         DocumentFile file = dir.createFile(typeOfName(name), name);
         if (file == null)
@@ -497,7 +498,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (! name.equals(file.getName())) {
             String given = file.getName();
             file.delete();
-            throw new IOException("Couldn't create " + name + " in the synced folder: its storage named it " + given);
+            throw new UnrepresentableNameException("Couldn't create " + name + " in the synced folder: its storage named it " + given);
         }
         return file;
     }

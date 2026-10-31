@@ -17,6 +17,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -196,21 +198,22 @@ public class AndroidPartialCopyTest {
         }
     }
 
+    /** A name the storage cannot hold is skipped and reported, and the rest of the folder still syncs. */
     @Test
-    public void aNameTheStorageCannotHoldIsReportedAsSuch() throws Exception {
+    public void aNameTheStorageCannotHoldIsSkipped() throws Exception {
         reset(true);
         SyncState state = new JdbcTreeState(":memory:");
         Files.write(otherRoot.resolve("a:b.txt"), "colon".getBytes());
-        try {
-            sync(state);
-            Assert.fail("A name the storage cannot hold was synced");
-        } catch (Exception e) {
-            StringBuilder messages = new StringBuilder();
-            for (Throwable t = e; t != null; t = t.getCause())
-                messages.append(t.getMessage()).append(" / ");
-            Assert.assertTrue(messages.toString(), messages.toString().contains("Couldn't create a:b.txt in the synced folder: its storage named it a_b.txt"));
-        }
-        Assert.assertFalse(tree(device).containsKey("a_b.txt"));
+        Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
+        List<String> log = Collections.synchronizedList(new ArrayList<>());
+        DirectorySync.syncDir(device, other, true, true, null, null, state, 32, 5,
+                Files.createTempDirectory(ctx.getCacheDir().toPath(), "sync-state"), crypto, () -> false, log::add);
+        Map<String, String> onDevice = tree(device);
+        Assert.assertEquals(log.toString(), "after it", onDevice.get("c.txt"));
+        Assert.assertFalse(onDevice.containsKey("a_b.txt"));
+        Assert.assertFalse(onDevice.containsKey("a:b.txt"));
+        Assert.assertTrue(log.toString(), log.stream().anyMatch(line -> line.contains("skipped")
+                && line.contains("its storage named it a_b.txt")));
     }
 
     @Test
