@@ -216,6 +216,42 @@ public class AndroidPartialCopyTest {
                 && line.contains("its storage named it a_b.txt")));
     }
 
+    /** The sync has no skip for a folder, so the pass fails, but the files in it are skipped, the rest still syncs,
+     *  and no folder is left under the name the storage chose. */
+    @Test
+    public void aFolderTheStorageCannotHoldLeavesNothingBehind() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.createDirectories(otherRoot.resolve("n:1"));
+        Files.write(otherRoot.resolve("n:1/x.txt"), "inside".getBytes());
+        Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
+        for (int pass = 0; pass < 2; pass++) {
+            try {
+                sync(state);
+                Assert.fail("A folder the storage cannot hold was synced");
+            } catch (Exception expected) {}
+        }
+        Map<String, String> onDevice = tree(device);
+        Assert.assertEquals(onDevice.toString(), Map.of("c.txt", "after it"), onDevice);
+    }
+
+    /** The sync looks for a moved file under the name it was moved to, so one the storage can't hold is left as it was */
+    @Test
+    public void aRenameTheStorageCannotHoldLeavesTheFileAsItWas() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.write(otherRoot.resolve("a.txt"), "renamed".getBytes());
+        sync(state);
+        Assert.assertEquals(Map.of("a.txt", "renamed"), tree(device));
+
+        Files.move(otherRoot.resolve("a.txt"), otherRoot.resolve("a:x.txt"));
+        try {
+            sync(state);
+            Assert.fail("A rename the storage cannot hold was synced");
+        } catch (Exception expected) {}
+        Assert.assertEquals(Map.of("a.txt", "renamed"), tree(device));
+    }
+
     @Test
     public void cannotCreateUnderAFile() throws Exception {
         reset(true);

@@ -18,6 +18,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
@@ -199,19 +200,38 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         return file.isPresent() && file.get().exists();
     }
 
+    /** The sync has no skip for a folder, and one recorded as made but missing here would be taken for a local
+     *  delete, so a folder the storage can't hold has to fail the pass. */
     @Override
-    public synchronized void mkdirs(Path p) {
+    public void mkdirs(Path p) {
+        try {
+            createDirs(p);
+        } catch (UnrepresentableNameException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** A provider names a new folder itself, and replaces characters its storage can't hold. A folder under another
+     *  name is removed again: whatever goes in it is looked for under the name asked for, and the next pass would
+     *  make another. */
+    private synchronized void createDirs(Path p) throws UnrepresentableNameException {
         if (p == null || p.getNameCount() == 0 || p.toString().isEmpty()) // base dir
             return;
         Path parent = p.getParent();
         if (! exists(parent))
-            mkdirs(parent);
+            createDirs(parent);
         if (! exists(p)) {
             DocumentFile parentDir = getByPath(parent).get();
             String ourName = p.getFileName().toString();
             DocumentFile subDir = findChild(parentDir, ourName);
-            if (subDir == null)
-                parentDir.createDirectory(ourName);
+            if (subDir == null) {
+                DocumentFile created = parentDir.createDirectory(ourName);
+                if (created != null && ! ourName.equals(created.getName())) {
+                    String given = created.getName();
+                    created.delete();
+                    throw new UnrepresentableNameException("Couldn't create " + ourName + " in the synced folder: its storage named it " + given);
+                }
+            }
         }
     }
 
@@ -240,20 +260,29 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         } else {
             try {
                 AsyncReader reader = getBytes(src, 0);
-                mkdirs(dest.getParent());
+                createDirs(dest.getParent());
                 setBytes(dest, 0, reader, srcFile.get().length(), Optional.empty(), Optional.empty(), Optional.empty(), ResumeUploadProps.random(crypto), () -> false, p -> {});
                 srcFile.get().delete();
             } catch (IOException e) {
-                throw new RuntimeException(e);
+                throw new UncheckedIOException(e);
             }
         }
     }
 
-    /** A file found from its path is a single document, which DocumentFile can't rename, but its provider can */
+    /** A file found from its path is a single document, which DocumentFile can't rename, but its provider can. The
+     *  provider replaces characters its storage can't hold, and the file is then put back, as the sync would look
+     *  for it under the name asked for. */
     private void rename(DocumentFile f, String name) {
+        String oldName = f.getName();
         try {
-            if (DocumentsContract.renameDocument(context.getContentResolver(), f.getUri(), name) == null)
+            Uri renamed = DocumentsContract.renameDocument(context.getContentResolver(), f.getUri(), name);
+            if (renamed == null)
                 throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
+            String given = DocumentFile.fromSingleUri(context, renamed).getName();
+            if (! name.equals(given)) {
+                DocumentsContract.renameDocument(context.getContentResolver(), renamed, oldName);
+                throw new UncheckedIOException(new UnrepresentableNameException("Couldn't rename " + oldName + " to " + name + " in the synced folder: its storage named it " + given));
+            }
         } catch (FileNotFoundException e) {
             throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name, e);
         }
@@ -312,7 +341,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         if (existingFile.isEmpty() || ! existingFile.get().exists()) {
             Path parentPath = p.getParent();
             if (! exists(parentPath)) {
-                mkdirs(parentPath);
+                createDirs(parentPath);
             }
             DocumentFile parent = getByPath(parentPath).orElseThrow(() -> new IllegalStateException("Absent dir: " + parentPath));
             DocumentFile file = createNamed(parent, filename);
@@ -407,7 +436,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         DocumentFile partial = getByPath(dir.resolve(name)).orElseThrow(() -> new FileNotFoundException("No copy of " + p));
         DocumentFile partialDir = getByPath(dir).orElseThrow(() -> new FileNotFoundException("No copy of " + p));
         Path parentPath = p.getParent() == null ? Paths.get("") : p.getParent();
-        mkdirs(parentPath);
+        createDirs(parentPath);
         DocumentFile parent = getByPath(parentPath).orElseThrow(() -> new IllegalStateException("Absent dir: " + parentPath));
         // there is no replacing move, but a download missing its target is downloaded again, as its source changed
         delete(p);

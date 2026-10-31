@@ -356,10 +356,7 @@ public class TestDocumentsProvider extends ContentProvider {
      *  buildUniqueFile): a character a FAT volume can't hold becomes '_', and a name whose extension does not go
      *  with the type asked for gets the type's extension added. */
     static String platformName(String mime, String displayName) {
-        StringBuilder valid = new StringBuilder();
-        for (char c : displayName.toCharArray())
-            valid.append(c < 0x20 || c == 0x7f || "\"*/:<>?\\|".indexOf(c) >= 0 ? '_' : c);
-        String name = valid.toString();
+        String name = validFatName(displayName);
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime) || "application/octet-stream".equals(mime))
             return name;
         int dot = name.lastIndexOf('.');
@@ -372,9 +369,17 @@ public class TestDocumentsProvider extends ContentProvider {
         return name + "." + extOfType;
     }
 
+    private static String validFatName(String displayName) {
+        StringBuilder valid = new StringBuilder();
+        for (char c : displayName.toCharArray())
+            valid.append(c < 0x20 || c == 0x7f || "\"*/:<>?\\|".indexOf(c) >= 0 ? '_' : c);
+        return valid.toString();
+    }
+
+    /** As the platform's providers rename (FileSystemProvider.renameDocument): the name is made valid the same way */
     private String rename(String docId, String displayName) throws IOException {
         File src = fileFor(docId);
-        File dst = new File(src.getParentFile(), displayName);
+        File dst = new File(src.getParentFile(), validFatName(displayName));
         if (!src.renameTo(dst)) throw new IOException("rename failed: " + src + " -> " + dst);
         return docIdFor(dst);
     }
