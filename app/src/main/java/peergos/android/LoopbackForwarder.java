@@ -1,5 +1,6 @@
 package peergos.android;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -52,6 +53,12 @@ final class LoopbackForwarder {
             } catch (IOException e) {
                 if (listening.isClosed())
                     return;
+                // out of descriptors, say: try again shortly rather than spin
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
                 continue;
             }
             Thread connection = new Thread(() -> forward(client, port), "loopback-forwarder-connection");
@@ -90,7 +97,7 @@ final class LoopbackForwarder {
         }
     }
 
-    private static void close(java.io.Closeable c) {
+    private static void close(Closeable c) {
         if (c == null)
             return;
         try {
