@@ -19,8 +19,8 @@ import peergos.server.webdav.caldav.TimeZones;
  * into the app from the server jar, so the two surfaces cannot drift in how they read a
  * date or decide that an event recurs.
  *
- * Alarms become a Reminders row, which is why a translation carries
- * {@link Translation#reminderMinutes} beside the event row, and attendees become rows of
+ * Alarms become Reminders rows, which is why a translation carries
+ * {@link Translation#reminders} beside the event row, and attendees become rows of
  * the Attendees table, which is why it carries those too.
  *
  * A series brings its exclusions (EXDATE), which is how the web app records an occurrence
@@ -36,13 +36,13 @@ public final class EventTranslator {
 
     private EventTranslator() {}
 
-    /** An event row, the one alarm the Reminders table can hold for it, its attendees, and
+    /** An event row, the alarms the Reminders table can hold for it, its attendees, and
      *  for a series the occurrences a CalDAV client overrode within the same file. */
-    public record Translation(ContentValues values, Optional<Integer> reminderMinutes, List<Attendee> attendees,
+    public record Translation(ContentValues values, List<Integer> reminders, List<Attendee> attendees,
                               List<Override> overrides) {}
 
     /** One overridden occurrence: the start it replaces, and the row that replaces it. */
-    public record Override(long instance, ContentValues values, Optional<Integer> reminderMinutes,
+    public record Override(long instance, ContentValues values, List<Integer> reminders,
                            List<Attendee> attendees) {}
 
     /** One ATTENDEE, as the contract's Attendees table holds it. */
@@ -93,11 +93,11 @@ public final class EventTranslator {
                     continue;
                 override.get().put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, instance.get().toEpochMilli());
                 override.get().put(CalendarContract.Events.ORIGINAL_ALL_DAY, allDay ? 1 : 0);
-                overrides.add(new Override(instance.get().toEpochMilli(), override.get(), reminderMinutes(part),
+                overrides.add(new Override(instance.get().toEpochMilli(), override.get(), reminders(part),
                         attendees(part)));
             }
         }
-        return Optional.of(new Translation(values.get(), reminderMinutes(event), attendees(event), overrides));
+        return Optional.of(new Translation(values.get(), reminders(event), attendees(event), overrides));
     }
 
     /** The row for one VEVENT on its own. */
@@ -112,8 +112,10 @@ public final class EventTranslator {
         ContentValues values = new ContentValues();
         values.put(CalendarContract.Events.CALENDAR_ID, calendarId);
         values.put(CalendarContract.Events.TITLE, unescape(event.value("SUMMARY").orElse("")));
-        event.value("DESCRIPTION").ifPresent(d -> values.put(CalendarContract.Events.DESCRIPTION, unescape(d)));
-        event.value("LOCATION").ifPresent(l -> values.put(CalendarContract.Events.EVENT_LOCATION, unescape(l)));
+        // Null when the file has none: the row is updated in place, and a column left out of
+        // the update keeps the text another client has since cleared.
+        values.put(CalendarContract.Events.DESCRIPTION, event.value("DESCRIPTION").map(EventTranslator::unescape).orElse(null));
+        values.put(CalendarContract.Events.EVENT_LOCATION, event.value("LOCATION").map(EventTranslator::unescape).orElse(null));
         values.put(CalendarContract.Events.DTSTART, from.get().toEpochMilli());
         values.put(CalendarContract.Events.STATUS, status(event));
         values.put(CalendarContract.Events.AVAILABILITY, availability(event));
@@ -129,7 +131,7 @@ public final class EventTranslator {
         values.put(CalendarContract.Events.ALL_DAY, allDay ? 1 : 0);
         values.put(CalendarContract.Events.EVENT_TIMEZONE, timezone(start.get(), allDay, zones, floating));
 
-        values.put(CalendarContract.Events.HAS_ALARM, reminderMinutes(event).isPresent() ? 1 : 0);
+        values.put(CalendarContract.Events.HAS_ALARM, reminders(event).isEmpty() ? 0 : 1);
 
         Optional<String> rrule = event.value("RRULE");
         List<Instant> rdates = new ArrayList<>(Exdates.of(event, "RDATE", zones, floating));
@@ -260,15 +262,16 @@ public final class EventTranslator {
     }
 
     /**
-     * The alarm the phone can ring, read straight from a file. {@link #translate} works it
-     * out as it goes; this is the same answer without a ContentValues in the way, which is
-     * what makes the rule testable off a device.
+     * The alarms the phone can ring, read straight from a file. {@link #translate} works
+     * them out as it goes; this is the same answer without a ContentValues in the way, which
+     * is what makes the rule testable off a device.
      */
-    public static Optional<Integer> reminderMinutes(String ics) {
+    public static List<Integer> reminders(String ics) {
         return ICal.parse(ics)
                 .map(ICal.Component::scheduleComponents)
                 .filter(parts -> ! parts.isEmpty())
-                .flatMap(parts -> reminderMinutes(parts.get(0)));
+                .map(parts -> reminders(parts.get(0)))
+                .orElse(List.of());
     }
 
     /** The three states the contract shares with iCalendar. */
@@ -282,14 +285,15 @@ public final class EventTranslator {
     }
 
     /**
-     * How many minutes before the start this event's alarm rings, if it has one this
-     * platform can show. Only a trigger measured back from the start counts: the
+     * How many minutes before the start this event's alarms ring, each one this platform
+     * can show, in the file's order. Only a trigger measured back from the start counts: the
      * contract's Reminders table has no other shape — it takes minutes-before and nothing
      * else — so an absolute trigger, or one measured from the end, is left to whatever
      * wrote it rather than moved to a time it did not ask for. {@link ICalWriter} keeps to
-     * the same rule when an alarm goes back the other way.
+     * the same rule when the alarms go back the other way.
      */
-    private static Optional<Integer> reminderMinutes(ICal.Component event) {
+    private static List<Integer> reminders(ICal.Component event) {
+        List<Integer> out = new ArrayList<>();
         for (ICal.Component alarm : event.children("VALARM")) {
             Optional<ICal.Property> trigger = alarm.property("TRIGGER");
             if (trigger.isEmpty())
@@ -302,10 +306,10 @@ public final class EventTranslator {
             if (before.isEmpty())
                 continue;
             long minutes = before.get().toMinutes();
-            if (minutes >= 0 && minutes <= Integer.MAX_VALUE)
-                return Optional.of((int) minutes);
+            if (minutes >= 0 && minutes <= Integer.MAX_VALUE && ! out.contains((int) minutes))
+                out.add((int) minutes);
         }
-        return Optional.empty();
+        return out;
     }
 
     /** DTEND, or DTSTART plus DURATION, or a sensible default when the event gives neither. */

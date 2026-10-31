@@ -3,6 +3,9 @@ package peergos.android;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ProviderInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.DocumentsContract;
@@ -60,6 +63,12 @@ public class ShareReceiverActivity extends Activity {
             finish();
             return;
         }
+        if (! isAnotherAppsContent(sourceUri)) {
+            Log.w(TAG, "Refused a share from " + sourceUri.getScheme() + ":" + sourceUri.getAuthority());
+            Toast.makeText(this, "This file can't be shared to Peergos", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
         String mimeType = in.getType();
         if (mimeType == null) mimeType = getContentResolver().getType(sourceUri);
         if (mimeType == null) mimeType = "application/octet-stream";
@@ -89,6 +98,30 @@ public class ShareReceiverActivity extends Activity {
                 startActivityForResult(create, REQUEST_CREATE);
             });
         }, "PeergosShareSignIn").start();
+    }
+
+    /** Only content another app hands over. Whatever is shared is read with Peergos' own
+     *  identity, so a file: uri, or one of our own providers, would let any app have Peergos
+     *  copy out its private files - its config, its caches, the drive itself - to wherever the
+     *  picker then saves them. Apps share content: uris, granted to us, since Android 7. */
+    private boolean isAnotherAppsContent(Uri uri) {
+        String authority = uri.getAuthority();
+        if (! ContentResolver.SCHEME_CONTENT.equals(uri.getScheme()) || authority == null)
+            return false;
+        // a uri from another user or profile carries the user id in front: "10@authority"
+        authority = authority.substring(authority.lastIndexOf('@') + 1);
+        try {
+            PackageInfo ours = getPackageManager().getPackageInfo(getPackageName(), PackageManager.GET_PROVIDERS);
+            if (ours.providers != null)
+                for (ProviderInfo provider : ours.providers)
+                    if (provider.authority != null)
+                        for (String own : provider.authority.split(";"))
+                            if (own.equals(authority))
+                                return false;
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        }
+        return true;
     }
 
     private static Uri peergosRootDocUri() {

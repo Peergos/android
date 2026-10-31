@@ -1,6 +1,7 @@
 package peergos.android.calendar;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -271,6 +272,31 @@ public class CalendarFieldsEndToEndTest {
     // ---- attendees ----
 
     @Test
+    public void everyAlarmIsAReminderAndEveryReminderAnAlarm() throws Exception {
+        put("2026/7/r.ics", event("r", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
+                + "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n"
+                + "BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-P1D\r\nEND:VALARM\r\n"));
+        sync();
+        long id = rowId("r.ics");
+        assertEquals(List.of(10, 1440), reminders(id));
+
+        // a third added on the phone, and the event touched as a calendar app does
+        ContentValues reminder = new ContentValues();
+        reminder.put(CalendarContract.Reminders.EVENT_ID, id);
+        reminder.put(CalendarContract.Reminders.MINUTES, 60);
+        reminder.put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT);
+        assertNotNull(context.getContentResolver().insert(CalendarContract.Reminders.CONTENT_URI, reminder));
+        edit("r.ics", v -> v.put(CalendarContract.Events.TITLE, "r touched"));
+        sync();
+        String file = read("r.ics");
+        for (String trigger : List.of("TRIGGER:-PT10M", "TRIGGER:-PT60M", "TRIGGER:-PT1440M"))
+            assertTrue("lost " + trigger + " from " + file, file.contains(trigger));
+        assertEquals(file, 3, file.split("BEGIN:VALARM", -1).length - 1);
+        assertEquals(0, sync());
+        assertEquals(List.of(10, 60, 1440), reminders(id));
+    }
+
+    @Test
     public void attendeesReachThePhoneAndComeBack() throws Exception {
         put("2026/7/m.ics", event("m", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
                 + "ORGANIZER;CN=Alice:mailto:alice@example.com\r\n"
@@ -392,6 +418,34 @@ public class CalendarFieldsEndToEndTest {
     // ---- colour, availability, privacy, status ----
 
     @Test
+    public void aFieldClearedOnThePhoneIsClearedInTheFile() throws Exception {
+        put("2026/7/d.ics", event("d", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"
+                + "DESCRIPTION:Agenda\r\nLOCATION:Room 1\r\n"));
+        sync();
+        assertEquals("Agenda", row("d.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+        edit("d.ics", v -> {
+            v.putNull(CalendarContract.Events.DESCRIPTION);
+            v.putNull(CalendarContract.Events.EVENT_LOCATION);
+        });
+        sync();
+        String file = read("d.ics");
+        assertFalse("the cleared description is still in the file: " + file, file.contains("DESCRIPTION:"));
+        assertFalse("the cleared location is still in the file: " + file, file.contains("LOCATION:"));
+        assertEquals(0, sync());
+    }
+
+    @Test
+    public void aFieldClearedInTheFileIsClearedOnThePhone() throws Exception {
+        put("2026/7/e.ics", event("e", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\nDESCRIPTION:Agenda\r\n"));
+        sync();
+        assertEquals("Agenda", row("e.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+        put("2026/7/e.ics", event("e", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\n"));
+        sync();
+        assertNull("the description cleared in the file is still on the phone",
+                row("e.ics").getAsString(CalendarContract.Events.DESCRIPTION));
+    }
+
+    @Test
     public void coloursComeAndGoBothWays() throws Exception {
         put("2026/7/a.ics", event("a", "DTSTART:20260715T090000Z\r\nDTEND:20260715T100000Z\r\nCOLOR:dodgerblue\r\n"));
         put("2026/7/b.ics", event("b", "DTSTART:20260716T090000Z\r\nDTEND:20260716T100000Z\r\nCOLOR:navy\r\n"));
@@ -474,6 +528,22 @@ public class CalendarFieldsEndToEndTest {
         assertEquals(0, sync());
     }
 
+    @Test
+    public void aSeriesLengthAsThePhonesCalendarAppsStoreIt() throws Exception {
+        put("recurring/s.ics", utcSeries("s", "RRULE:FREQ=WEEKLY\r\n"));
+        sync();
+        // AOSP Calendar and Etar keep a timed series' length as P<seconds>S, not RFC 5545's PT2H
+        edit("s.ics", v -> {
+            v.put(CalendarContract.Events.TITLE, "s, two hours now");
+            v.putNull(CalendarContract.Events.DTEND);
+            v.put(CalendarContract.Events.DURATION, "P7200S");
+        });
+        sync();
+        String file = read("s.ics");
+        assertTrue("two hours on the phone did not reach the file: " + file, file.contains("DTEND:20260105T110000Z"));
+        assertEquals(0, sync());
+    }
+
     // ---- helpers ----
 
     private static long at(String instant) {
@@ -541,6 +611,18 @@ public class CalendarFieldsEndToEndTest {
         values.put(CalendarContract.Events.DTEND, instance + HOUR);
         values.put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CANCELED);
         assertNotNull(context.getContentResolver().insert(CalendarContract.Events.CONTENT_URI, values));
+    }
+
+    private List<Integer> reminders(long eventId) throws Exception {
+        List<Integer> out = new ArrayList<>();
+        try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
+                new String[]{CalendarContract.Reminders.MINUTES},
+                CalendarContract.Reminders.EVENT_ID + "=?", new String[]{Long.toString(eventId)},
+                CalendarContract.Reminders.MINUTES + " ASC")) {
+            while (cursor != null && cursor.moveToNext())
+                out.add(cursor.getInt(0));
+        }
+        return out;
     }
 
     private long rowId(String name) throws Exception {

@@ -22,6 +22,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import peergos.server.webdav.caldav.AppDataStore;
 import peergos.server.webdav.caldav.CalendarStore;
@@ -249,7 +252,7 @@ public class CalendarUploader {
         String patched = ICalWriter.patch(existing, changes.lines, changes.removals);
         if (changes.define.isPresent())
             patched = ICalWriter.withTimeZone(patched, changes.define.get());
-        write(directory, row.syncId, withReminder(patched, row), row.id, faithful);
+        write(directory, row.syncId, withReminders(patched, row), row.id, faithful);
         return true;
     }
 
@@ -272,34 +275,35 @@ public class CalendarUploader {
         List<ICalWriter.Line> lines = new ArrayList<>(changes.lines);
         title.ifPresent(t -> lines.add(ICalWriter.text("SUMMARY", t)));
         lines.add(ICalWriter.text("X-OWNER", account.name));
-        String ics = withReminder(ICalWriter.create(uid, lines), row);
+        String ics = withReminders(ICalWriter.create(uid, lines), row);
         return changes.define.map(zone -> ICalWriter.withTimeZone(ics, zone)).orElse(ics);
     }
 
     /**
-     * The reminder as the phone now has it. Without this a reminder added or cleared in
+     * The reminders as the phone now has them. Without this a reminder added or cleared in
      * the platform calendar would never reach the file, and the next download pass — which
-     * writes the Reminders row from the file — would quietly undo it.
+     * writes the Reminders rows from the file — would quietly undo it.
      */
-    private String withReminder(String ics, Row row) throws Exception {
-        return ICalWriter.withReminder(ics, reminderOf(row.id), row.title);
+    private String withReminders(String ics, Row row) throws Exception {
+        return ICalWriter.withReminders(ics, remindersOf(row.id), row.title);
     }
 
-    /** The earliest alarm the phone would ring for this event, in minutes before the start. */
-    private Optional<Integer> reminderOf(long rowId) throws Exception {
+    /** Every alarm the phone would ring for this event, in minutes before the start. */
+    private List<Integer> remindersOf(long rowId) throws Exception {
+        List<Integer> out = new ArrayList<>();
         try (Cursor cursor = provider.query(asSyncAdapter(CalendarContract.Reminders.CONTENT_URI),
                 new String[]{CalendarContract.Reminders.MINUTES},
                 CalendarContract.Reminders.EVENT_ID + "=?",
                 new String[]{Long.toString(rowId)},
-                CalendarContract.Reminders.MINUTES + " DESC")) {
+                CalendarContract.Reminders.MINUTES + " ASC")) {
             while (cursor != null && cursor.moveToNext()) {
                 // A negative value is the provider's "use the calendar's default", which
                 // names no time of its own to write down.
-                if (! cursor.isNull(0) && cursor.getInt(0) >= 0)
-                    return Optional.of(cursor.getInt(0));
+                if (! cursor.isNull(0) && cursor.getInt(0) >= 0 && ! out.contains(cursor.getInt(0)))
+                    out.add(cursor.getInt(0));
             }
         }
-        return Optional.empty();
+        return out;
     }
 
     /** @param faithful whether the row now says everything about exclusions the file does,
@@ -364,10 +368,16 @@ public class CalendarUploader {
         Optional<ContentValues> before = existing.map(Existing::values);
 
         lines.add(ICalWriter.text("SUMMARY", row.title == null ? "" : row.title));
+        // A field cleared on the phone is a NULL column: the property goes, or the file
+        // keeps the old text and the next download brings it back.
         if (row.description != null)
             lines.add(ICalWriter.text("DESCRIPTION", row.description));
+        else
+            removals.add("DESCRIPTION");
         if (row.location != null)
             lines.add(ICalWriter.text("LOCATION", row.location));
+        else
+            removals.add("LOCATION");
 
         ICalWriter.Form form = form(row, existing);
         if (before.isEmpty() || ! sameTimes(row, before.get(), faithful)) {
@@ -495,7 +505,7 @@ public class CalendarUploader {
             return end;
         long start = values.getAsLong(CalendarContract.Events.DTSTART);
         return start + Optional.ofNullable(values.getAsString(CalendarContract.Events.DURATION))
-                .flatMap(ICal::parseDuration).map(Duration::toMillis).orElse(0L);
+                .flatMap(CalendarUploader::duration).map(Duration::toMillis).orElse(0L);
     }
 
     /** EXDATE or RDATE: written in the start's form if they differ from the file's, and taken
@@ -612,11 +622,36 @@ public class CalendarUploader {
         if (row.end != null)
             return row.end;
         if (row.duration != null) {
-            Optional<Duration> length = ICal.parseDuration(row.duration);
+            Optional<Duration> length = duration(row.duration);
             if (length.isPresent())
                 return row.start + length.get().toMillis();
         }
         return row.start + (row.allDay ? Duration.ofDays(1).toMillis() : Duration.ofHours(1).toMillis());
+    }
+
+    /**
+     * The provider's DURATION. RFC 5545 puts a T before the time units, and {@link ICal}
+     * reads only that form; the calendar apps on the phone store a timed series as the
+     * contract's own "P7200S", units straight after the P. Read as one hour, that series
+     * reached every other device an hour long.
+     */
+    static Optional<Duration> duration(String value) {
+        Matcher m = DURATION.matcher(value.trim());
+        if (! m.matches() || IntStream.rangeClosed(2, 6).allMatch(unit -> m.group(unit) == null))
+            return Optional.empty();
+        Duration d = Duration.ZERO
+                .plusDays(7L * number(m.group(2)) + number(m.group(3)))
+                .plusHours(number(m.group(4)))
+                .plusMinutes(number(m.group(5)))
+                .plusSeconds(number(m.group(6)));
+        return Optional.of("-".equals(m.group(1)) ? d.negated() : d);
+    }
+
+    private static final Pattern DURATION =
+            Pattern.compile("([+-])?P(?:(\\d+)W)?(?:(\\d+)D)?T?(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?");
+
+    private static long number(String group) {
+        return group == null ? 0 : Long.parseLong(group);
     }
 
     private void purge(long rowId) throws Exception {

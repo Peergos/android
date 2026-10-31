@@ -272,12 +272,12 @@ public final class ICalWriter {
     }
 
     /**
-     * Puts the phone's own reminder into the file, as the single alarm the Reminders table
-     * can hold: minutes before the start. An alarm this platform cannot express — absolute,
-     * or measured from the end — is left exactly where it is, because nothing on the phone
-     * was offered the chance to change it.
+     * Puts the phone's own reminders into the file, as the alarms the Reminders table can
+     * hold: minutes before the start, one alarm each. An alarm this platform cannot express
+     * — absolute, or measured from the end — is left exactly where it is, because nothing on
+     * the phone was offered the chance to change it.
      */
-    public static String withReminder(String ics, Optional<Integer> minutes, String description) {
+    public static String withReminders(String ics, List<Integer> minutes, String description) {
         List<String> out = new ArrayList<>();
         List<String> alarm = null;
         boolean inEvent = false;
@@ -311,8 +311,8 @@ public final class ICalWriter {
                 continue;
             }
             if (inEvent && nested == 0 && name.equals("END") && value.equalsIgnoreCase("VEVENT")) {
-                if (minutes.isPresent())
-                    out.addAll(alarmBlock(minutes.get(), description));
+                for (int each : minutes)
+                    out.addAll(alarmBlock(each, description));
                 out.add(line);
                 inEvent = false;
                 done = true;

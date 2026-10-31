@@ -3,7 +3,7 @@ package peergos.android.calendar;
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.util.Optional;
+import java.util.List;
 
 /**
  * What the mirror is willing to turn into a Reminders row. The contract's table holds one
@@ -28,42 +28,50 @@ public class ReminderMinutesTest {
 
     @Test
     public void readsMinutesBeforeTheStart() {
-        Assert.assertEquals(Optional.of(15), EventTranslator.reminderMinutes(event(alarm("-PT15M"))));
-        Assert.assertEquals(Optional.of(90), EventTranslator.reminderMinutes(event(alarm("-PT1H30M"))));
-        Assert.assertEquals(Optional.of(1440), EventTranslator.reminderMinutes(event(alarm("-P1D"))));
-        Assert.assertEquals(Optional.of(10080), EventTranslator.reminderMinutes(event(alarm("-P7D"))));
-        Assert.assertEquals(Optional.of(0), EventTranslator.reminderMinutes(event(alarm("-PT0M"))));
+        Assert.assertEquals(List.of(15), EventTranslator.reminders(event(alarm("-PT15M"))));
+        Assert.assertEquals(List.of(90), EventTranslator.reminders(event(alarm("-PT1H30M"))));
+        Assert.assertEquals(List.of(1440), EventTranslator.reminders(event(alarm("-P1D"))));
+        Assert.assertEquals(List.of(10080), EventTranslator.reminders(event(alarm("-P7D"))));
+        Assert.assertEquals(List.of(0), EventTranslator.reminders(event(alarm("-PT0M"))));
+    }
+
+    @Test
+    public void everyAlarmIsARemindersRow() {
+        // a Thunderbird event with ten minutes and a day before: both ring on the phone
+        Assert.assertEquals(List.of(10, 1440), EventTranslator.reminders(event(alarm("-PT10M"), alarm("-P1D"))));
+        // the same minute twice is one row; the table would ring it twice
+        Assert.assertEquals(List.of(10), EventTranslator.reminders(event(alarm("-PT10M"), alarm("-PT10M"))));
     }
 
     @Test
     public void anEventWithoutAnAlarmHasNoReminder() {
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(event()));
+        Assert.assertEquals(List.of(), EventTranslator.reminders(event()));
     }
 
     @Test
     public void leavesTriggersTheContractCannotExpress() {
         // measured from the end
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(
+        Assert.assertEquals(List.of(), EventTranslator.reminders(
                 event("BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;RELATED=END:-PT5M\r\nEND:VALARM")));
         // an absolute time
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(
+        Assert.assertEquals(List.of(), EventTranslator.reminders(
                 event("BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;VALUE=DATE-TIME:20260910T090000Z\r\nEND:VALARM")));
         // after the start, which the table has no room for
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(event(alarm("PT15M"))));
+        Assert.assertEquals(List.of(), EventTranslator.reminders(event(alarm("PT15M"))));
         // nonsense
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(event(alarm("soon"))));
+        Assert.assertEquals(List.of(), EventTranslator.reminders(event(alarm("soon"))));
     }
 
     @Test
-    public void takesTheFirstAlarmItCanShow() {
+    public void takesEveryAlarmItCanShow() {
         String ics = event("BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER;RELATED=END:-PT5M\r\nEND:VALARM",
                 alarm("-PT20M"), alarm("-PT45M"));
-        Assert.assertEquals(Optional.of(20), EventTranslator.reminderMinutes(ics));
+        Assert.assertEquals(List.of(20, 45), EventTranslator.reminders(ics));
     }
 
     @Test
     public void survivesRubbish() {
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes(""));
-        Assert.assertEquals(Optional.empty(), EventTranslator.reminderMinutes("not a calendar"));
+        Assert.assertEquals(List.of(), EventTranslator.reminders(""));
+        Assert.assertEquals(List.of(), EventTranslator.reminders("not a calendar"));
     }
 }
