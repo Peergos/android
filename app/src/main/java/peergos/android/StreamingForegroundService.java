@@ -27,7 +27,11 @@ public class StreamingForegroundService extends Service {
     /** Increment the open-FD count and start the service on the 0→1 transition. */
     public static void acquire(Context ctx) {
         if (openFds.getAndIncrement() == 0) {
-            ctx.startForegroundService(new Intent(ctx, StreamingForegroundService.class));
+            try {
+                ctx.startForegroundService(new Intent(ctx, StreamingForegroundService.class));
+            } catch (IllegalStateException refused) {
+                // ForegroundServiceStartNotAllowedException: the file still opens, without the exemption
+            }
         }
     }
 
@@ -36,7 +40,12 @@ public class StreamingForegroundService extends Service {
         if (openFds.decrementAndGet() <= 0) {
             Intent stop = new Intent(ctx, StreamingForegroundService.class);
             stop.setAction(ACTION_STOP);
-            ctx.startService(stop);
+            try {
+                ctx.startService(stop);
+            } catch (IllegalStateException notRunning) {
+                // a process in the background can't start a service, and one stopped at the time limit has
+                // nothing left to stop
+            }
         }
     }
 
@@ -53,7 +62,13 @@ public class StreamingForegroundService extends Service {
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setOngoing(true)
                 .build();
-        startForeground(NOTIFICATION_ID, notification);
+        try {
+            startForeground(NOTIFICATION_ID, notification);
+        } catch (IllegalStateException refused) {
+            // ForegroundServiceStartNotAllowedException: the day's time is spent. It is thrown here rather than to
+            // whoever started the service, and uncaught it ends the process.
+            stopSelf(startId);
+        }
         return START_NOT_STICKY;
     }
 
