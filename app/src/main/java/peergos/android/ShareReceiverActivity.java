@@ -124,8 +124,8 @@ public class ShareReceiverActivity extends Activity {
             }
             out.flush();
             // A close cannot fail, so this is where a target that uploads, as Peergos does, says whether that
-            // worked: without it a share whose upload failed was reported as saved. Another app's provider may
-            // hand out a pipe, which can't be synced, so only Peergos' own documents are.
+            // worked, and a failed upload is a failed save. Another app's provider may hand out a pipe, which
+            // can't be synced, so only Peergos' own documents are.
             if (DocumentsProviderBackend.AUTHORITY.equals(target.getAuthority()) && out instanceof FileOutputStream)
                 ((FileOutputStream) out).getFD().sync();
             return total;
