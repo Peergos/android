@@ -9,6 +9,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.Semaphore;
 
 /** Holds [::1] on the local server's port and passes its connections through to 127.0.0.1, where the server
  *  listens. The WebView resolves localhost to ::1 before 127.0.0.1, so whatever holds that port is sent the
@@ -16,7 +17,12 @@ import java.net.Socket;
  */
 final class LoopbackForwarder {
 
+    /** A WebView opens a handful of connections to a host, so this is far more than it needs; past it a connection
+     *  is dropped, so another app opening thousands can't use up this app's threads and descriptors. */
+    static final int MAX_CONNECTIONS = 64;
+
     private static ServerSocket held;
+    private static final Semaphore connections = new Semaphore(MAX_CONNECTIONS);
 
     private LoopbackForwarder() {}
 
@@ -61,9 +67,19 @@ final class LoopbackForwarder {
                 }
                 continue;
             }
-            Thread connection = new Thread(() -> forward(client, port), "loopback-forwarder-connection");
-            connection.setDaemon(true);
-            connection.start();
+            if (! connections.tryAcquire()) {
+                close(client);
+                continue;
+            }
+            try {
+                Thread connection = new Thread(() -> forward(client, port), "loopback-forwarder-connection");
+                connection.setDaemon(true);
+                connection.start();
+            } catch (Throwable e) {
+                // no thread to be had: lose this connection, not the app
+                close(client);
+                connections.release();
+            }
         }
     }
 
@@ -74,10 +90,12 @@ final class LoopbackForwarder {
             back.start();
             pump(client, upstream);
             back.join();
-        } catch (IOException | InterruptedException e) {
-            // the server isn't up yet or went away: dropping the connection is the WebView's error page
+        } catch (Throwable e) {
+            // the server isn't up yet or went away, or there was no thread for the reply: dropping the connection
+            // is the WebView's error page
         } finally {
             close(client);
+            connections.release();
         }
     }
 
