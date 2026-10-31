@@ -22,9 +22,8 @@ import java.util.Set;
 
 /** Keeps the process in the foreground while DownloadManager fetches files from the server in it.
  *
- *  Over when every download it was started for has finished, which it asks DownloadManager about. The completion
- *  broadcast it waited for before comes from another app, and a receiver registered as not exported never hears
- *  it: the notification and the service stayed up after every download. */
+ *  Over when every download it was started for has finished, which it asks DownloadManager about: the completion
+ *  broadcast comes from another app, which a receiver registered as not exported never hears. */
 public class DownloadForegroundService extends Service {
 
     public static final String CHANNEL_ID = "download-foreground";
@@ -55,7 +54,14 @@ public class DownloadForegroundService extends Service {
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setOngoing(true)
                 .build();
-        startForeground(NOTIFICATION_ID, notification);
+        try {
+            startForeground(NOTIFICATION_ID, notification);
+        } catch (IllegalStateException refused) {
+            // ForegroundServiceStartNotAllowedException: the day's time is spent. It is thrown here rather than to
+            // whoever started the service, and uncaught it ends the process. DownloadManager goes on without it.
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         if (intent != null && intent.hasExtra(EXTRA_DOWNLOAD_ID))
             downloads.add(intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1));
         handler.removeCallbacks(check);
