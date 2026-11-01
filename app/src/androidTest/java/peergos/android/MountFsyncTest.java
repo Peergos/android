@@ -168,6 +168,35 @@ public class MountFsyncTest {
         }
     }
 
+    /** A failed sync of an edited file sticks as a new file's does: the writer was told its bytes aren't safe */
+    @Test
+    public void aFailedSyncOfAnEditSticks() throws Exception {
+        String folder = "fsync-edit-gone";
+        user.getUserRoot().join().mkdir(folder, network, false, user.mirrorBatId(), crypto).join();
+        String path = "/" + user.username + "/" + folder + "/edited.txt";
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "w");
+             FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor())) {
+            out.write("0123456789".getBytes(StandardCharsets.UTF_8));
+        }
+        assertSettlesTo(path, "0123456789");
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "rw");
+             FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor())) {
+            out.write("XY".getBytes(StandardCharsets.UTF_8));
+            user.getByPath("/" + user.username + "/" + folder).join().get()
+                    .remove(user.getUserRoot().join(), Paths.get(user.username, folder), user).join();
+            try {
+                out.getFD().sync();
+                fail("fsync reported the edit safe, but nothing could store it");
+            } catch (IOException expected) {
+            }
+            try {
+                out.write("more".getBytes(StandardCharsets.UTF_8));
+                fail("a write after the failed sync was taken");
+            } catch (IOException expected) {
+            }
+        }
+    }
+
     /** As the share target writes what is shared with Peergos: a stream from openOutputStream, synced before it is
      *  closed. */
     @Test

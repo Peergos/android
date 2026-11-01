@@ -637,6 +637,9 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                 upload();
             } catch (Exception e) {
                 Log.w(TAG, "fsync upload of " + name + " failed", e);
+                // The writer has been told the bytes aren't safe, so it sticks: a later write is an error, and the
+                // close doesn't store them after all, where the writer may already have removed the document.
+                writeError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                 throw new ErrnoException("onFsync", OsConstants.EIO);
             }
         }
@@ -648,14 +651,8 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
                 // The stream ends with this upload. Anything the writer adds after it
                 // revises a file that now exists, which is what staging is for.
                 stream.setEof();
-                try {
-                    uploadTask.get();
-                    finishStreamedUpload(size);
-                } catch (Exception e) {
-                    // the stream has ended, so nothing written from here could reach Peergos
-                    writeError = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    throw e;
-                }
+                uploadTask.get();
+                finishStreamedUpload(size);
                 stream = null;
                 uploadTask = null;
                 // The wrapper from the open is the empty placeholder; staging looks the
