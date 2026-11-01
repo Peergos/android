@@ -41,7 +41,12 @@ public class DownloadForegroundService extends Service {
     public static void track(Context context, long downloadId) {
         Intent intent = new Intent(context, DownloadForegroundService.class);
         intent.putExtra(EXTRA_DOWNLOAD_ID, downloadId);
-        ContextCompat.startForegroundService(context, intent);
+        try {
+            ContextCompat.startForegroundService(context, intent);
+        } catch (IllegalStateException refused) {
+            // ForegroundServiceStartNotAllowedException, the app having gone to the background since the download
+            // was asked for: DownloadManager goes on without it
+        }
     }
 
     @Override
