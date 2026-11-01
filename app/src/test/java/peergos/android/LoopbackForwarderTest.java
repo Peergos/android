@@ -30,7 +30,7 @@ public class LoopbackForwarderTest {
         }
     }
 
-    /** Stands in for the local server: echoes each connection until the other side closes it */
+    /** Stands in for the local server: echoes each connection until the other side closes it, or sends a 'q' */
     private static ServerSocket echoServer() throws IOException {
         ServerSocket server = new ServerSocket(0, 200, V4);
         Thread accepter = new Thread(() -> {
@@ -42,7 +42,7 @@ public class LoopbackForwarderTest {
                             InputStream in = c.getInputStream();
                             OutputStream out = c.getOutputStream();
                             int b;
-                            while ((b = in.read()) != -1)
+                            while ((b = in.read()) != -1 && b != 'q')
                                 out.write(b);
                         } catch (IOException ignored) {}
                     });
@@ -71,6 +71,18 @@ public class LoopbackForwarderTest {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /** @return whether a new connection is served within a few seconds */
+    private static boolean servedAgain(int port) throws Exception {
+        for (int attempt = 0; attempt < 50; attempt++) {
+            try (Socket again = connect(port)) {
+                if (echoes(again))
+                    return true;
+            }
+            Thread.sleep(100);
+        }
+        return false;
     }
 
     @Test
@@ -115,15 +127,22 @@ public class LoopbackForwarderTest {
 
                 // a closed connection gives its slot back
                 open.remove(0).close();
-                boolean served = false;
-                for (int attempt = 0; attempt < 50 && ! served; attempt++) {
-                    try (Socket again = connect(port)) {
-                        served = echoes(again);
-                    }
-                    if (! served)
-                        Thread.sleep(100);
+                Assert.assertTrue(servedAgain(port));
+
+                // and so does one the server has finished with, though the client keeps its side open
+                for (int attempt = 0; attempt < 100 && open.size() < LoopbackForwarder.MAX_CONNECTIONS; attempt++) {
+                    Socket s = connect(port);
+                    if (echoes(s))
+                        open.add(s);
+                    else
+                        s.close();
                 }
-                Assert.assertTrue(served);
+                Assert.assertEquals(LoopbackForwarder.MAX_CONNECTIONS, open.size());
+                try (Socket extra = connect(port)) {
+                    Assert.assertFalse("the cap is full again", echoes(extra));
+                }
+                open.get(0).getOutputStream().write('q');
+                Assert.assertTrue("a connection the server closed still holds its slot", servedAgain(port));
             } finally {
                 for (Socket s : open)
                     s.close();

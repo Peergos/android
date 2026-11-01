@@ -85,7 +85,11 @@ final class LoopbackForwarder {
 
     private static void forward(Socket client, int port) {
         try (Socket upstream = new Socket(InetAddress.getByName("127.0.0.1"), port)) {
-            Thread back = new Thread(() -> pump(upstream, client), "loopback-forwarder-reply");
+            Thread back = new Thread(() -> {
+                pump(upstream, client);
+                // the server is done with this connection: a client that keeps its side open mustn't keep the slot
+                close(client);
+            }, "loopback-forwarder-reply");
             back.setDaemon(true);
             back.start();
             pump(client, upstream);
@@ -105,10 +109,8 @@ final class LoopbackForwarder {
             InputStream in = from.getInputStream();
             OutputStream out = to.getOutputStream();
             int read;
-            while ((read = in.read(buffer)) != -1) {
+            while ((read = in.read(buffer)) != -1)
                 out.write(buffer, 0, read);
-                out.flush();
-            }
             to.shutdownOutput();
         } catch (IOException e) {
             close(to);
