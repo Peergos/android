@@ -467,9 +467,9 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         }
     }
 
-    /** Read-write proxy callback. Writes land in a staging file in the cache dir, and the
-     *  whole thing is uploaded on fsync and on release via the normal
-     *  {@code uploadFileSection} path — the same one in-app uploads use.
+    /** Read-write proxy callback. A file this open created streams to Peergos as it is written;
+     *  an existing one is staged in a file in the cache dir and uploaded whole, on fsync and on
+     *  release, via the normal {@code uploadFileSection} path — the same one in-app uploads use.
      *
      *  The release upload runs on {@code postReleasePool} so the FD-close path doesn't
      *  block on network I/O; the foreground service stays acquired until it completes. An
@@ -644,7 +644,7 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             }
         }
 
-        /** Everything written since the last upload goes to Peergos. */
+        /** What has been written goes to Peergos: the rest of a new file's stream, or the whole staged file. */
         private void upload() throws Exception {
             if (!dirty) return;
             if (stream != null) {
@@ -669,7 +669,11 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         public void onRelease() {
             try { if (raf != null) raf.close(); } catch (Exception ignored) {}
             raf = null;
-            if (stream != null) stream.setEof();
+            // after an error the writer was told of, the rest of what it wrote is not stored
+            if (stream != null) {
+                if (writeError != null) stream.abort(writeError);
+                else stream.setEof();
+            }
             thread.quitSafely();
             postReleasePool.execute(() -> {
                 String error = writeError;
