@@ -1603,6 +1603,9 @@ public class MainActivity extends AppCompatActivity {
      *  time, and two starts that both find no server running both bind the port, the second one failing. */
     public SyncRunner startServer(int port) {
         synchronized (serverStart) {
+            // this process's own server is up already: no probe, which a slow answer could get wrong
+            if (localAuth != null)
+                return null;
             return startServerIfNotRunning(port);
         }
     }
