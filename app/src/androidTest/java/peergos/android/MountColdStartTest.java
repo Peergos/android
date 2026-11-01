@@ -82,7 +82,7 @@ public class MountColdStartTest {
             Assert.assertNull(c);
         }
         long waited = System.currentTimeMillis() - start;
-        Assert.assertTrue("gave up after " + waited + " ms", waited >= 15_000);
+        Assert.assertTrue("gave up after " + waited + " ms", waited >= PeergosSession.SIGN_IN_WAIT_MILLIS - 500);
         start = System.currentTimeMillis();
         try (Cursor c = query("/" + user.username)) {
             Assert.assertNull(c);

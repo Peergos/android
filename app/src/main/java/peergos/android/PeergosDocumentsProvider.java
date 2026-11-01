@@ -133,6 +133,15 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         return cursor;
     }
 
+    /** Asked on the caller's thread, often an app's UI thread as it starts an activity for a document, which a wait
+     *  for the sign-in at start would hold past its input timeout: before a session there is no type to give. */
+    @Override
+    public String getDocumentType(String documentId) throws FileNotFoundException {
+        if (PeergosSession.context().isEmpty())
+            return null;
+        return super.getDocumentType(documentId);
+    }
+
     @Override
     public Cursor queryDocument(String documentId, String[] projection) throws FileNotFoundException {
         MatrixCursor cursor = new MatrixCursor(projection != null ? projection : DEFAULT_DOCUMENT_PROJECTION);
