@@ -13,6 +13,7 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.DataInputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -104,7 +105,11 @@ public class MountOpenModesTest {
         // read back through "rw" and close without writing: nothing is lost
         try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "rw");
              FileInputStream in = new FileInputStream(pfd.getFileDescriptor())) {
-            assertEquals("0123456789", new String(in.readAllBytes(), StandardCharsets.UTF_8));
+            // readAllBytes came to Android only in API 33, and the app runs from 30
+            byte[] read = new byte[10];
+            new DataInputStream(in).readFully(read);
+            assertEquals("0123456789", new String(read, StandardCharsets.UTF_8));
+            assertEquals(-1, in.read());
         }
         assertSettlesTo(path, "0123456789");
         // one byte in the middle: the rest stays
