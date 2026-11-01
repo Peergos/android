@@ -786,14 +786,12 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
             if (thumbnail.isEmpty() && wantsThumbnail(mimeType)) {
                 // Too big to have kept in memory, so read it back from Peergos — the blocks
                 // we just wrote are still local, and video is read a frame at a time.
-                if (mimeType.startsWith("video/")) addVideoThumbnail();
-                else {
-                    try {
-                        lookup().calculateAndUpdateThumbnail(s.network, s.crypto).join();
-                    } catch (Exception e) {
-                        // the file is stored by now: a thumbnail it couldn't get is no failure of the write
-                        Log.w(TAG, "thumbnail failed for " + name, e);
-                    }
+                try {
+                    if (mimeType.startsWith("video/")) addVideoThumbnail();
+                    else lookup().calculateAndUpdateThumbnail(s.network, s.crypto).join();
+                } catch (Exception e) {
+                    // the file is stored by now: a thumbnail it couldn't get is no failure of the write
+                    Log.w(TAG, "thumbnail failed for " + name, e);
                 }
             }
         }
