@@ -105,6 +105,21 @@ public class MountColdStartTest {
         PeergosSession.publish(user, network, crypto);
     }
 
+    @Test
+    public void aSignInThatFailedIsNotWaitedFor() throws Exception {
+        PeergosSession.clear();
+        PeergosSession.signingIn();
+        // as the mount handler tells its backend when the saved mount's sign-in fails on its own thread
+        new DocumentsProviderBackend(InstrumentationRegistry.getInstrumentation().getTargetContext())
+                .enableFailed("Incorrect password");
+        long start = System.currentTimeMillis();
+        try (Cursor c = query("/" + user.username)) {
+            Assert.assertNull(c);
+        }
+        Assert.assertTrue("waited for a sign-in that had failed", System.currentTimeMillis() - start < 2_000);
+        PeergosSession.publish(user, network, crypto);
+    }
+
     private static Cursor query(String documentId) {
         ContentResolver resolver = InstrumentationRegistry.getInstrumentation().getTargetContext().getContentResolver();
         Uri doc = DocumentsContract.buildDocumentUri(DocumentsProviderBackend.AUTHORITY, documentId);
