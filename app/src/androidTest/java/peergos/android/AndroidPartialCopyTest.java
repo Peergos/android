@@ -198,22 +198,25 @@ public class AndroidPartialCopyTest {
         }
     }
 
-    /** A name the storage cannot hold is skipped and reported, and the rest of the folder still syncs. */
+    /** A name the storage cannot hold is skipped and reported, and the rest of the folder still syncs. The copy
+     *  given up on is not resumed at the start of the next pass, which would fail it: the file is skipped again. */
     @Test
     public void aNameTheStorageCannotHoldIsSkipped() throws Exception {
         reset(true);
         SyncState state = new JdbcTreeState(":memory:");
         Files.write(otherRoot.resolve("a:b.txt"), "colon".getBytes());
         Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
-        List<String> log = Collections.synchronizedList(new ArrayList<>());
-        DirectorySync.syncDir(device, other, true, true, null, null, state, 32, 5,
-                Files.createTempDirectory(ctx.getCacheDir().toPath(), "sync-state"), crypto, () -> false, log::add);
-        Map<String, String> onDevice = tree(device);
-        Assert.assertEquals(log.toString(), "after it", onDevice.get("c.txt"));
-        Assert.assertFalse(onDevice.containsKey("a_b.txt"));
-        Assert.assertFalse(onDevice.containsKey("a:b.txt"));
-        Assert.assertTrue(log.toString(), log.stream().anyMatch(line -> line.contains("skipped")
-                && line.contains("its storage named it a_b.txt")));
+        for (int pass = 0; pass < 2; pass++) {
+            List<String> log = Collections.synchronizedList(new ArrayList<>());
+            DirectorySync.syncDir(device, other, true, true, null, null, state, 32, 5,
+                    Files.createTempDirectory(ctx.getCacheDir().toPath(), "sync-state"), crypto, () -> false, log::add);
+            Map<String, String> onDevice = tree(device);
+            Assert.assertEquals("pass " + pass + ": " + log, "after it", onDevice.get("c.txt"));
+            Assert.assertFalse(onDevice.containsKey("a_b.txt"));
+            Assert.assertFalse(onDevice.containsKey("a:b.txt"));
+            Assert.assertTrue("pass " + pass + ": " + log, log.stream().anyMatch(line -> line.contains("skipped")
+                    && line.contains("its storage named it a_b.txt")));
+        }
     }
 
     /** The sync has no skip for a folder, so the pass fails, but the files in it are skipped, the rest still syncs,
