@@ -39,8 +39,9 @@ public class AndroidPoster implements HttpPoster {
 
     /** Cuts a request off at its timeout. HttpURLConnection bounds a connect and each read,
      *  but not a body it is sending: a PUT of a block to a peer that stops taking bytes sits
-     *  in write for as long as TCP keeps retrying. JavaPoster's timeout covers the whole
-     *  request, and so does this one. */
+     *  in write for as long as TCP keeps retrying. JavaPoster's timeout covers the request up
+     *  to the response headers, and so does this one: the response body is read under the
+     *  read timeout, as there, so a slow download that keeps coming is not cut short. */
     private static final ScheduledThreadPoolExecutor DEADLINES = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "AndroidPoster-deadline");
         t.setDaemon(true);
@@ -54,7 +55,7 @@ public class AndroidPoster implements HttpPoster {
     }
 
     /** A timeout of 0 or less is none, as it is for HttpURLConnection's own. */
-    private static final class Deadline {
+    static final class Deadline {
         private final ScheduledFuture<?> cut;
         private volatile boolean passed;
 
@@ -73,6 +74,11 @@ public class AndroidPoster implements HttpPoster {
             if (cut != null)
                 cut.cancel(false);
         }
+    }
+
+    /** Deadlines still scheduled: a finished request leaves none behind */
+    static int deadlinesPending() {
+        return DEADLINES.getQueue().size();
     }
 
     private final URL dht;
@@ -155,6 +161,7 @@ public class AndroidPoster implements HttpPoster {
             }
 
             String contentEncoding = conn.getContentEncoding();
+            deadline.done(); // the headers are in: the body is read under the read timeout
             boolean isGzipped = "gzip".equals(contentEncoding);
             byte[] resp;
             try (DataInputStream din = new DataInputStream(isGzipped && unzip ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream())) {
@@ -241,7 +248,9 @@ public class AndroidPoster implements HttpPoster {
                 out.flush();
             }
 
-            try (InputStream in = conn.getInputStream()) {
+            InputStream in = conn.getInputStream();
+            deadline.done(); // the headers are in: the body is read under the read timeout
+            try (in) {
                 return Futures.of(Serialize.readFully(in));
             }
         } catch (IOException | RuntimeException e) {
@@ -295,7 +304,7 @@ public class AndroidPoster implements HttpPoster {
                 conn = (HttpURLConnection) buildURL(url).openConnection();
                 conn.setConnectTimeout(10_000);
                 conn.setReadTimeout(15000);
-                // the whole request, as JavaPoster bounds a get
+                // up to the response headers, as JavaPoster bounds a get
                 deadline = new Deadline(conn, 60_000);
                 conn.setDoInput(true);
                 for (Map.Entry<String, String> e : headers.entrySet()) {
@@ -305,6 +314,7 @@ public class AndroidPoster implements HttpPoster {
                     conn.setRequestProperty("Authorization", basicAuth.get());
 
                 String contentEncoding = conn.getContentEncoding();
+                deadline.done(); // the headers are in: the body is read under the read timeout
                 boolean isGzipped = "gzip".equals(contentEncoding);
                 try (DataInputStream din = new DataInputStream(isGzipped ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream())) {
                     return Serialize.readFully(din);

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -71,6 +72,27 @@ public class AndroidPosterTimeoutTest {
     @Test(timeout = 30_000)
     public void aPostThatIsNeverAnsweredEndsAtItsTimeout() {
         assertTimesOut(poster.post("api", new byte[16], false, 1_000));
+    }
+
+    /** A request that ends, however it ends, takes its deadline out of the queue with it: left there, each would
+     *  keep its connection, and on Android the body it buffered, until the time it would have fired. */
+    @Test(timeout = 30_000)
+    public void aFinishedRequestLeavesNoDeadlineBehind() throws IOException {
+        int closedPort;
+        try (ServerSocket taken = new ServerSocket(0)) {
+            closedPort = taken.getLocalPort();
+        }
+        AndroidPoster refused = new AndroidPoster(new URL("http://127.0.0.1:" + closedPort + "/"), true);
+        for (CompletableFuture<byte[]> request : List.of(
+                refused.put("block", new byte[16], Collections.emptyMap(), 60_000),
+                refused.post("api", new byte[16], false, 60_000))) {
+            try {
+                request.join();
+                fail("a request to a closed port completed");
+            } catch (CompletionException expected) {
+            }
+        }
+        assertEquals("deadlines left scheduled by finished requests", 0, AndroidPoster.deadlinesPending());
     }
 
     private static void assertTimesOut(CompletableFuture<byte[]> request) {
