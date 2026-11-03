@@ -260,9 +260,10 @@ public class MountFsyncTest {
         }
     }
 
-    /** The server stops taking part while a file is open: the sync is an error once the requests behind it have
-     *  timed out and their retries are spent, which is minutes, not for as long as TCP keeps trying, which is not.
-     *  And it sticks, as any failed sync does. */
+    /** The server stops taking part while a file is open: the sync is an error once the request behind it has
+     *  timed out and its retries are spent, which is minutes, and it sticks, as any failed sync does. The first
+     *  request of an upload is small, so this is the wait a read timeout ends; the one a body nobody takes makes,
+     *  which only the request's deadline ends, is AndroidPosterTimeoutTest's. */
     @Test
     public void aSyncToAServerThatStopsAnsweringIsAnErrorInTime() throws Exception {
         String folder = "fsync-stall";

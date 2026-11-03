@@ -53,22 +53,22 @@ public class AndroidPosterTimeoutTest {
     /** More than the socket buffers on either side hold, so the send itself stalls. */
     private static final byte[] BIG = new byte[64 << 20];
 
-    @Test
+    @Test(timeout = 30_000)
     public void aPutWhoseBodyIsNeverTakenEndsAtItsTimeout() {
         assertTimesOut(poster.put("block", BIG, Collections.emptyMap(), 1_000));
     }
 
-    @Test
+    @Test(timeout = 30_000)
     public void aPutThatIsNeverAnsweredEndsAtItsTimeout() {
         assertTimesOut(poster.put("block", new byte[16], Collections.emptyMap(), 1_000));
     }
 
-    @Test
+    @Test(timeout = 30_000)
     public void aPostWhoseBodyIsNeverTakenEndsAtItsTimeout() {
         assertTimesOut(poster.post("api", BIG, false, 1_000));
     }
 
-    @Test
+    @Test(timeout = 30_000)
     public void aPostThatIsNeverAnsweredEndsAtItsTimeout() {
         assertTimesOut(poster.post("api", new byte[16], false, 1_000));
     }
