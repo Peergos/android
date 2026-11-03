@@ -95,6 +95,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -1596,7 +1597,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private static final Object serverStart = new Object();
+
+    /** One at a time: an activity made again at launch, as a configuration change does, starts this a second
+     *  time, and two starts that both find no server running both bind the port, the second one failing. */
     public SyncRunner startServer(int port) {
+        synchronized (serverStart) {
+            // this process's own server is up already: no probe, which a slow answer could get wrong
+            if (localAuth != null)
+                return null;
+            return startServerIfNotRunning(port);
+        }
+    }
+
+    private SyncRunner startServerIfNotRunning(int port) {
         File privateStorage = this.getFilesDir();
         Path peergosDir = Paths.get(privateStorage.getAbsolutePath());
         System.out.println("Peergos using private storage dir: " + peergosDir);
@@ -1767,6 +1781,9 @@ public class MainActivity extends AppCompatActivity {
             localAuth = server.localAuth;
 
             return syncer;
+        } catch (BindException e) {
+            // another app holds the port: localAuth stays unset, and the activity says so
+            return null;
         } catch (IOException | URISyntaxException e) {
             throw new RuntimeException(e);
         }
