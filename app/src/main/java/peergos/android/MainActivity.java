@@ -568,7 +568,10 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
+            // Edge to edge, the window keeps its height under the keyboard, so the web view has to give the
+            // keyboard its room itself, or a dialog sized to the viewport keeps its lower fields behind it.
+            Insets keyboard = insets.getInsets(WindowInsetsCompat.Type.ime());
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, Math.max(systemBars.bottom, keyboard.bottom));
             return insets;
         });
 
