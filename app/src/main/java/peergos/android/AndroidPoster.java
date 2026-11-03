@@ -76,6 +76,18 @@ public class AndroidPoster implements HttpPoster {
         }
     }
 
+    /** Ends a request however it went: its deadline leaves the queue, and its connection is
+     *  closed, which one the deadline has already cut may refuse. */
+    private static void finish(Deadline deadline, HttpURLConnection conn) {
+        if (deadline != null)
+            deadline.done();
+        if (conn != null)
+            try {
+                conn.disconnect();
+            } catch (RuntimeException disconnectedAtItsDeadline) {
+            }
+    }
+
     /** Deadlines still scheduled: a finished request leaves none behind */
     static int deadlinesPending() {
         return DEADLINES.getQueue().size();
@@ -188,13 +200,7 @@ public class AndroidPoster implements HttpPoster {
             } else
                 res.completeExceptionally(e);
         } finally {
-            if (deadline != null)
-                deadline.done();
-            if (conn != null)
-                try {
-                    conn.disconnect();
-                } catch (RuntimeException disconnectedAtItsDeadline) {
-                }
+            finish(deadline, conn);
         }
         return res;
     }
@@ -269,13 +275,7 @@ public class AndroidPoster implements HttpPoster {
                 res.completeExceptionally(e);
             return res;
         } finally {
-            if (deadline != null)
-                deadline.done();
-            if (conn != null)
-                try {
-                    conn.disconnect();
-                } catch (RuntimeException disconnectedAtItsDeadline) {
-                }
+            finish(deadline, conn);
         }
     }
 
@@ -333,13 +333,7 @@ public class AndroidPoster implements HttpPoster {
                     } catch (UnsupportedEncodingException f) {}
                 throw new RuntimeException(withStatus(conn, url, (IOException) e));
             } finally {
-                if (deadline != null)
-                    deadline.done();
-                if (conn != null)
-                    try {
-                        conn.disconnect();
-                    } catch (RuntimeException disconnectedAtItsDeadline) {
-                    }
+                finish(deadline, conn);
             }
         }, REQUESTS);
     }
