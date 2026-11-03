@@ -17,12 +17,19 @@ import org.junit.runner.RunWith;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
+import java.util.concurrent.CompletableFuture;
 
 import peergos.server.Main;
 import peergos.shared.Crypto;
@@ -51,6 +58,62 @@ public class MountFsyncTest {
     private static NetworkAccess network;
     private static UserContext user;
     private static ContentResolver resolver;
+    private static Stallable poster;
+
+    /** The host server, until told to stall: then a peer that accepts a connection and neither reads nor
+     *  answers, which is what a server or a network that stops part way looks like to a request. */
+    private static final class Stallable implements HttpPoster {
+        private final HttpPoster live;
+        private final HttpPoster blackHole;
+        private final ServerSocket sink;
+        private final List<Socket> held = Collections.synchronizedList(new ArrayList<>());
+        volatile boolean stall;
+
+        Stallable(HttpPoster live) throws IOException {
+            this.live = live;
+            // on either loopback: the device may bind one family and connect by the other
+            sink = new ServerSocket(0);
+            Thread accept = new Thread(() -> {
+                try {
+                    while (true) held.add(sink.accept());
+                } catch (IOException closed) {
+                }
+            }, "black-hole");
+            accept.setDaemon(true);
+            accept.start();
+            // by name: the app allows cleartext to localhost alone
+            blackHole = new AndroidPoster(new URL("http://localhost:" + sink.getLocalPort() + "/"), false);
+        }
+
+        private HttpPoster target() {
+            return stall ? blackHole : live;
+        }
+
+        @Override
+        public CompletableFuture<byte[]> post(String url, byte[] payload, boolean unzip, int timeoutMillis) {
+            return target().post(url, payload, unzip, timeoutMillis);
+        }
+
+        @Override
+        public CompletableFuture<byte[]> postUnzip(String url, byte[] payload, int timeoutMillis) {
+            return target().postUnzip(url, payload, timeoutMillis);
+        }
+
+        @Override
+        public CompletableFuture<byte[]> put(String url, byte[] payload, Map<String, String> headers) {
+            return target().put(url, payload, headers);
+        }
+
+        @Override
+        public CompletableFuture<byte[]> put(String url, byte[] payload, Map<String, String> headers, int timeoutMillis) {
+            return target().put(url, payload, headers, timeoutMillis);
+        }
+
+        @Override
+        public CompletableFuture<byte[]> get(String url, Map<String, String> headers) {
+            return target().get(url, headers);
+        }
+    }
 
     @BeforeClass
     public static void signUp() throws Exception {
@@ -61,8 +124,8 @@ public class MountFsyncTest {
 
         crypto = Main.initCrypto(new ScryptAndroid());
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
-        HttpPoster poster = new AndroidPoster(serverUrl, false,
-                Optional.empty(), Optional.of("peergos-android-test"));
+        poster = new Stallable(new AndroidPoster(serverUrl, false,
+                Optional.empty(), Optional.of("peergos-android-test")));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);
         network = NetworkAccess.buildViaPeergosInstance(poster, poster, localDht,
                 5_000, crypto.hasher, false, DeviceTokenStore.inMemory()).join();
@@ -194,6 +257,38 @@ public class MountFsyncTest {
                 fail("a write after the failed sync was taken");
             } catch (IOException expected) {
             }
+        }
+    }
+
+    /** The server stops taking part while a file is open: the sync is an error once the requests behind it have
+     *  timed out and their retries are spent, which is minutes, not for as long as TCP keeps trying, which is not.
+     *  And it sticks, as any failed sync does. */
+    @Test
+    public void aSyncToAServerThatStopsAnsweringIsAnErrorInTime() throws Exception {
+        String folder = "fsync-stall";
+        user.getUserRoot().join().mkdir(folder, network, false, user.mirrorBatId(), crypto).join();
+        String path = "/" + user.username + "/" + folder + "/stalled.txt";
+        try (ParcelFileDescriptor pfd = resolver.openFileDescriptor(document(path), "w");
+             FileOutputStream out = new FileOutputStream(pfd.getFileDescriptor())) {
+            out.write("never taken".getBytes(StandardCharsets.UTF_8));
+            poster.stall = true;
+            long started = System.currentTimeMillis();
+            try {
+                out.getFD().sync();
+                fail("fsync reported the bytes safe through a server that takes nothing");
+            } catch (IOException expected) {
+            }
+            long took = System.currentTimeMillis() - started;
+            assertTrue("the sync never reached the server that takes nothing", ! poster.held.isEmpty());
+            assertTrue("fsync failed after " + took + " ms, before any request could have timed out", took >= 10_000);
+            assertTrue("fsync waited " + took + " ms on a server that takes nothing", took < 6 * 60_000);
+            try {
+                out.write("more".getBytes(StandardCharsets.UTF_8));
+                fail("a write after the failed sync was taken");
+            } catch (IOException expected) {
+            }
+        } finally {
+            poster.stall = false;
         }
     }
 

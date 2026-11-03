@@ -19,6 +19,9 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.zip.GZIPInputStream;
 
@@ -33,6 +36,38 @@ public class AndroidPoster implements HttpPoster {
         t.setDaemon(true);
         return t;
     });
+
+    /** Cuts a request off at its timeout. HttpURLConnection bounds a connect and each read,
+     *  but not a body it is sending: a PUT of a block to a peer that stops taking bytes sits
+     *  in write for as long as TCP keeps retrying. JavaPoster's timeout covers the whole
+     *  request, and so does this one. */
+    private static final ScheduledExecutorService DEADLINES = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "AndroidPoster-deadline");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /** A timeout of 0 or less is none, as it is for HttpURLConnection's own. */
+    private static final class Deadline {
+        private final ScheduledFuture<?> cut;
+        private volatile boolean passed;
+
+        Deadline(HttpURLConnection conn, int timeoutMillis) {
+            cut = timeoutMillis <= 0 ? null : DEADLINES.schedule(() -> {
+                passed = true;
+                conn.disconnect();
+            }, timeoutMillis, TimeUnit.MILLISECONDS);
+        }
+
+        boolean passed() {
+            return passed;
+        }
+
+        void done() {
+            if (cut != null)
+                cut.cancel(false);
+        }
+    }
 
     private final URL dht;
     private final boolean useGet;
@@ -92,6 +127,7 @@ public class AndroidPoster implements HttpPoster {
 
     private CompletableFuture<byte[]> postSync(String url, byte[] payload, boolean unzip, Map<String, String> headers, int timeoutMillis) {
         HttpURLConnection conn = null;
+        Deadline deadline = null;
         CompletableFuture<byte[]> res = new CompletableFuture<>();
         try
         {
@@ -99,6 +135,7 @@ public class AndroidPoster implements HttpPoster {
             if (timeoutMillis >= 0)
                 conn.setReadTimeout(timeoutMillis);
             conn.setConnectTimeout(1_000);
+            deadline = new Deadline(conn, timeoutMillis);
             conn.setDoInput(true);
             conn.setDoOutput(true);
             for (Map.Entry<String, String> e : headers.entrySet()) {
@@ -120,28 +157,43 @@ public class AndroidPoster implements HttpPoster {
             res.complete(resp);
         } catch (SocketTimeoutException e) {
             res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
-        } catch (IOException e) {
-            if (conn != null){
+        } catch (IOException | RuntimeException e) {
+            // cut off at its deadline, the connection fails whatever it was doing in whatever way it does
+            if (deadline != null && deadline.passed())
+                res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
+            else if (! (e instanceof IOException))
+                res.completeExceptionally(e);
+            else if (conn != null){
                 String trailer = conn.getHeaderField("Trailer");
                 if (trailer != null)
                     System.err.println("Trailer:" + trailer);
                 else
                     System.err.println(e.getMessage() + " retrieving " + url);
                 res.completeExceptionally(trailer == null ?
-                        withStatus(conn, url, e) :
+                        withStatus(conn, url, (IOException) e) :
                         new RuntimeException(trailer));
             } else
                 res.completeExceptionally(e);
         } finally {
+            if (deadline != null)
+                deadline.done();
             if (conn != null)
-                conn.disconnect();
+                try {
+                    conn.disconnect();
+                } catch (RuntimeException disconnectedAtItsDeadline) {
+                }
         }
         return res;
     }
 
     @Override
     public CompletableFuture<byte[]> put(String url, byte[] body, Map<String, String> headers) {
-        return async(() -> putSync(url, body, headers));
+        return put(url, body, headers, 60_000);
+    }
+
+    @Override
+    public CompletableFuture<byte[]> put(String url, byte[] body, Map<String, String> headers, int timeoutMillis) {
+        return async(() -> putSync(url, body, headers, timeoutMillis));
     }
 
     /** Runs a blocking request on the request pool. */
@@ -162,11 +214,16 @@ public class AndroidPoster implements HttpPoster {
         return res;
     }
 
-    private CompletableFuture<byte[]> putSync(String url, byte[] body, Map<String, String> headers) {
+    private CompletableFuture<byte[]> putSync(String url, byte[] body, Map<String, String> headers, int timeoutMillis) {
         HttpURLConnection conn = null;
+        Deadline deadline = null;
         try {
             conn = (HttpURLConnection) buildURL(url).openConnection();
             conn.setRequestMethod("PUT");
+            conn.setConnectTimeout(10_000);
+            if (timeoutMillis >= 0)
+                conn.setReadTimeout(timeoutMillis);
+            deadline = new Deadline(conn, timeoutMillis);
             for (Map.Entry<String, String> e : headers.entrySet()) {
                 conn.setRequestProperty(e.getKey(), e.getValue());
             }
@@ -181,9 +238,13 @@ public class AndroidPoster implements HttpPoster {
             try (InputStream in = conn.getInputStream()) {
                 return Futures.of(Serialize.readFully(in));
             }
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             CompletableFuture<byte[]> res = new CompletableFuture<>();
-            if (conn != null) {
+            if (e instanceof SocketTimeoutException || (deadline != null && deadline.passed()))
+                res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
+            else if (! (e instanceof IOException))
+                res.completeExceptionally(e);
+            else if (conn != null) {
                 try (InputStream err = conn.getErrorStream()) {
                     res.completeExceptionally(new IOException("HTTP " + conn.getResponseCode() + ": " + conn.getResponseMessage()));
                 } catch (IOException f) {
@@ -193,8 +254,13 @@ public class AndroidPoster implements HttpPoster {
                 res.completeExceptionally(e);
             return res;
         } finally {
+            if (deadline != null)
+                deadline.done();
             if (conn != null)
-                conn.disconnect();
+                try {
+                    conn.disconnect();
+                } catch (RuntimeException disconnectedAtItsDeadline) {
+                }
         }
     }
 
