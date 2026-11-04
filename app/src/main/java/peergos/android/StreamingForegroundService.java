@@ -23,10 +23,12 @@ public class StreamingForegroundService extends Service {
     public static final String ACTION_STOP = "peergos.android.STREAMING_STOP";
 
     private static final AtomicInteger openFds = new AtomicInteger(0);
+    /** False once the system has refused the service or ended it at the time limit, files open or not */
+    private static volatile boolean inForeground;
 
-    /** Increment the open-FD count and start the service on the 0→1 transition. */
+    /** Increment the open-FD count and start the service on the 0→1 transition, or if it is not in the foreground. */
     public static void acquire(Context ctx) {
-        if (openFds.getAndIncrement() == 0) {
+        if (openFds.getAndIncrement() == 0 || ! inForeground) {
             try {
                 ctx.startForegroundService(new Intent(ctx, StreamingForegroundService.class));
             } catch (IllegalStateException refused) {
@@ -64,9 +66,11 @@ public class StreamingForegroundService extends Service {
                 .build();
         try {
             startForeground(NOTIFICATION_ID, notification);
+            inForeground = true;
         } catch (IllegalStateException refused) {
             // ForegroundServiceStartNotAllowedException: the day's time is spent. It is thrown here rather than to
             // whoever started the service, and uncaught it ends the process.
+            inForeground = false;
             stopSelf(startId);
         }
         return START_NOT_STICKY;
@@ -77,6 +81,12 @@ public class StreamingForegroundService extends Service {
     @Override
     public void onTimeout(int startId, int fgsType) {
         stopSelf();
+    }
+
+    @Override
+    public void onDestroy() {
+        inForeground = false;
+        super.onDestroy();
     }
 
     @Override
