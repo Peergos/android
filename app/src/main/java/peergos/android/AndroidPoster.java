@@ -362,6 +362,8 @@ public class AndroidPoster implements HttpPoster {
                     throw new RuntimeException("Timeout retrieving: " + url, new SocketTimeoutException("Socket timeout on: " + url));
                 if (! (e instanceof IOException))
                     throw (RuntimeException) e;
+                if (conn == null)
+                    throw new RuntimeException(e);
                 String trailer = conn.getHeaderField("Trailer");
                 if (trailer != null)
                     try {

@@ -222,6 +222,20 @@ public class AndroidPosterTimeoutTest {
         }
     }
 
+    /** A get that fails before it has a connection says why, rather than with a NullPointerException. */
+    @Test(timeout = 30_000)
+    public void aGetThatFailsBeforeItConnectsSaysWhy() {
+        try {
+            poster.get("nosuch://block").join();
+            fail("a get of a url with no protocol handler completed");
+        } catch (CompletionException e) {
+            Throwable why = e.getCause();
+            while (why != null && ! (why instanceof MalformedURLException))
+                why = why.getCause();
+            assertTrue("the real error was lost: " + e.getCause(), why != null);
+        }
+    }
+
     private static void assertTimesOut(CompletableFuture<byte[]> request) {
         long started = System.currentTimeMillis();
         try {
