@@ -26,6 +26,12 @@ public class StreamingForegroundServiceTest {
             // as at the time limit, where the service stops itself
             ctx.stopService(new Intent(ctx, StreamingForegroundService.class));
             awaitForeground(ctx, false, "it was stopped");
+            // and gone in this process too: the system lets it go before its onDestroy runs here
+            long end = System.currentTimeMillis() + 15_000;
+            while (StreamingForegroundService.countedInForeground() && System.currentTimeMillis() < end)
+                Thread.sleep(50);
+            Assert.assertFalse("the stopped service still counts as in the foreground",
+                    StreamingForegroundService.countedInForeground());
             StreamingForegroundService.acquire(ctx);
             try {
                 awaitForeground(ctx, true, "another file was opened");

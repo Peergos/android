@@ -80,6 +80,8 @@ public class StreamingForegroundService extends Service {
      *  open, though reads through them may stall once the process is in the background. */
     @Override
     public void onTimeout(int startId, int fgsType) {
+        // out of the foreground from now, not only once onDestroy runs: a file opened meanwhile starts it again
+        inForeground = false;
         stopSelf();
     }
 
@@ -87,6 +89,12 @@ public class StreamingForegroundService extends Service {
     public void onDestroy() {
         inForeground = false;
         super.onDestroy();
+    }
+
+    /** Whether this process still counts the service as in the foreground, which it stops doing in onDestroy, a
+     *  moment after the system has let it go */
+    static boolean countedInForeground() {
+        return inForeground;
     }
 
     @Override
