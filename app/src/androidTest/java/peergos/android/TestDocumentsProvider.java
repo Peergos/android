@@ -77,10 +77,14 @@ public class TestDocumentsProvider extends ContentProvider {
     /** Test-only: moves what is at the path in arg to extras' to, folders included, as another app editing the files
      *  would. An error, such as there being nothing to move, is returned as error, as exceptions don't cross processes */
     public static final String METHOD_MOVE_PATH = "test:move";
+    /** Test-only: a rename to the name in arg fails, as the platform's providers' does when the file can't be renamed
+     *  (FileSystemProvider.renameDocument throws IllegalStateException), until this is called without a name */
+    public static final String METHOD_FAIL_RENAMES_TO = "test:failRenamesTo";
     private static final String STAGING_DIR = ".peergos-partial-downloads";
 
     private File rootDir;
     private volatile boolean moveSupported = true;
+    private volatile String failRenamesTo;
     private Locale systemLocale;
 
     @Override
@@ -198,6 +202,10 @@ public class TestDocumentsProvider extends ContentProvider {
                 out.putParcelable(EXTRA_URI, DocumentsContract.buildDocumentUriUsingTree(docUri, docIdFor(dst)));
                 return out;
             }
+            if (METHOD_FAIL_RENAMES_TO.equals(method)) {
+                failRenamesTo = arg;
+                return null;
+            }
             if (METHOD_TREE.equals(method))
                 return tree();
             if (METHOD_SET_MODIFIED.equals(method)) {
@@ -218,6 +226,7 @@ public class TestDocumentsProvider extends ContentProvider {
             }
             if (METHOD_RESET_AND_SEED.equals(method)) {
                 moveSupported = extras.getBoolean("moveSupported", true);
+                failRenamesTo = null;
                 String locale = extras.getString("locale");
                 Locale.setDefault(locale == null ? systemLocale : Locale.forLanguageTag(locale));
                 int count = extras.getInt("count");
@@ -227,6 +236,9 @@ public class TestDocumentsProvider extends ContentProvider {
                 resetAndSeed(count, seed, minSize, maxSize);
                 return null;
             }
+        } catch (IllegalStateException e) {
+            // crosses to the caller as it is, as the platform's providers' does
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -390,6 +402,8 @@ public class TestDocumentsProvider extends ContentProvider {
      *  numbered while it is taken (FileUtils.buildUniqueFile), on storage that ignores case, as shared storage does, so
      *  the file being renamed takes it too */
     private String rename(String docId, String displayName) throws IOException {
+        if (displayName.equals(failRenamesTo))
+            throw new IllegalStateException("Failed to rename to " + displayName);
         File src = fileFor(docId);
         String name = validFatName(displayName);
         int dot = name.lastIndexOf('.');

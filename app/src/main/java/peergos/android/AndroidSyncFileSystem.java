@@ -290,12 +290,25 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                 throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
             String given = DocumentFile.fromSingleUri(context, renamed).getName();
             if (! name.equals(given)) {
-                DocumentsContract.renameDocument(context.getContentResolver(), renamed, oldName);
-                throw new UncheckedIOException(new UnrepresentableNameException("Couldn't rename " + oldName + " to " + name + " in the synced folder: its storage named it " + given));
+                String now = putBack(renamed, given, oldName);
+                throw new UncheckedIOException(new UnrepresentableNameException("Couldn't rename " + oldName + " to " + name +
+                        " in the synced folder: its storage named it " + given + (Objects.equals(oldName, now) ? "" : ", and it is now " + now)));
             }
         } catch (FileNotFoundException e) {
             throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name, e);
         }
+    }
+
+    /** Renames a file back as far as it can, without hiding the error that led here: the name it has after */
+    private String putBack(Uri file, String current, String oldName) {
+        try {
+            Uri back = DocumentsContract.renameDocument(context.getContentResolver(), file, oldName);
+            if (back != null)
+                return DocumentFile.fromSingleUri(context, back).getName();
+        } catch (Exception e) {
+            System.err.println("Couldn't rename " + current + " back to " + oldName + ": " + e);
+        }
+        return current;
     }
 
     @Override
