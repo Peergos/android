@@ -8,11 +8,13 @@ import org.junit.runner.RunWith;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -99,6 +101,65 @@ public class AndroidPosterDeviceTimeoutTest {
             }
         }
         assertEquals("deadlines left scheduled by finished requests", 0, AndroidPoster.deadlinesPending());
+    }
+
+    /** Takes each request at a steady rate, as a slow uplink lets it through, and answers it once it has
+     *  all of it. */
+    private static ServerSocket slowUplink(int bytesPerSecond) throws IOException {
+        ServerSocket server = new ServerSocket();
+        server.setReceiveBufferSize(64 << 10);
+        server.bind(new InetSocketAddress(0));
+        Thread serve = new Thread(() -> {
+            while (! server.isClosed())
+                try (Socket s = server.accept()) {
+                    takeSlowly(s, bytesPerSecond);
+                } catch (IOException | InterruptedException dropped) {
+                }
+        }, "slow-uplink");
+        serve.setDaemon(true);
+        serve.start();
+        return server;
+    }
+
+    private static void takeSlowly(Socket s, int bytesPerSecond) throws IOException, InterruptedException {
+        InputStream in = s.getInputStream();
+        StringBuilder head = new StringBuilder();
+        while (! head.toString().endsWith("\r\n\r\n")) {
+            int b = in.read();
+            if (b < 0)
+                return;
+            head.append((char) b);
+        }
+        long length = 0;
+        for (String line : head.toString().split("\r\n"))
+            if (line.toLowerCase().startsWith("content-length:"))
+                length = Long.parseLong(line.substring(15).trim());
+        byte[] piece = new byte[16 << 10];
+        long started = System.nanoTime();
+        for (long taken = 0; taken < length; ) {
+            int n = in.read(piece, 0, (int) Math.min(piece.length, length - taken));
+            if (n < 0)
+                return;
+            taken += n;
+            long ahead = taken * 1_000_000_000L / bytesPerSecond - (System.nanoTime() - started);
+            if (ahead > 0)
+                Thread.sleep(ahead / 1_000_000, (int) (ahead % 1_000_000));
+        }
+        s.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .getBytes(StandardCharsets.US_ASCII));
+    }
+
+    /** An upload that keeps going is not cut at its timeout, however long it takes: a block on a slow mobile
+     *  uplink, or on one that several blocks share, takes longer than its timeout to send, and would be cut the
+     *  same way on every retry. Each takes 4 s here, and what the socket buffers still hold after the last
+     *  write, at most 1 MiB, goes in half a second. */
+    @Test(timeout = 30_000)
+    public void aBodyThatKeepsGoingIsNotCutAtItsTimeout() throws IOException {
+        try (ServerSocket slow = slowUplink(2 << 20)) {
+            AndroidPoster p = new AndroidPoster(new URL("http://localhost:" + slow.getLocalPort() + "/"), true);
+            p.put("block", BIG, Collections.emptyMap(), 2_000).join();
+            p.post("api", BIG, false, 2_000).join();
+        }
     }
 
     private static void assertTimesOut(CompletableFuture<byte[]> request) {

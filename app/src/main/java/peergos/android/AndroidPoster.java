@@ -3,7 +3,6 @@ package peergos.android;
 import org.peergos.util.Futures;
 
 import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -40,8 +39,9 @@ public class AndroidPoster implements HttpPoster {
     /** Cuts a request off at its timeout. HttpURLConnection bounds a connect and each read,
      *  but not a body it is sending: a PUT of a block to a peer that stops taking bytes sits
      *  in write for as long as TCP keeps retrying. JavaPoster's timeout covers the request up
-     *  to the response headers, and so does this one: the response body is read under the
-     *  read timeout, as there, so a slow download that keeps coming is not cut short. */
+     *  to the response headers, and so does this one, except that it starts again with each
+     *  piece of the body sent, so a slow upload that keeps going is not cut short; the
+     *  response body is read under the read timeout, as there, for a slow download. */
     private static final ScheduledThreadPoolExecutor DEADLINES = new ScheduledThreadPoolExecutor(1, r -> {
         Thread t = new Thread(r, "AndroidPoster-deadline");
         t.setDaemon(true);
@@ -56,14 +56,25 @@ public class AndroidPoster implements HttpPoster {
 
     /** A timeout of 0 or less is none, as it is for HttpURLConnection's own. */
     static final class Deadline {
-        private final ScheduledFuture<?> cut;
+        private final HttpURLConnection conn;
+        private final int timeoutMillis;
+        private ScheduledFuture<?> cut;
         private volatile boolean passed;
 
         Deadline(HttpURLConnection conn, int timeoutMillis) {
-            cut = timeoutMillis <= 0 ? null : DEADLINES.schedule(() -> {
-                passed = true;
-                conn.disconnect();
-            }, timeoutMillis, TimeUnit.MILLISECONDS);
+            this.conn = conn;
+            this.timeoutMillis = timeoutMillis;
+            restart();
+        }
+
+        /** The request has moved: its whole timeout runs again from now */
+        void restart() {
+            done();
+            if (timeoutMillis > 0)
+                cut = DEADLINES.schedule(() -> {
+                    passed = true;
+                    conn.disconnect();
+                }, timeoutMillis, TimeUnit.MILLISECONDS);
         }
 
         boolean passed() {
@@ -73,6 +84,24 @@ public class AndroidPoster implements HttpPoster {
         void done() {
             if (cut != null)
                 cut.cancel(false);
+        }
+    }
+
+    /** How much of a body is sent between one restart of its deadline and the next */
+    private static final int PIECE = 64 * 1024;
+
+    /** Sends a body, restarting the deadline with each piece the connection takes: one that
+     *  stops is cut at the timeout, one that is only slow, as on a mobile uplink that several
+     *  blocks share, is not. A buffered body is written all at once while the response is
+     *  awaited, with no progress to see, so one bigger than a piece is streamed. */
+    private static void send(HttpURLConnection conn, byte[] body, Deadline deadline) throws IOException {
+        if (body.length > PIECE)
+            conn.setFixedLengthStreamingMode(body.length);
+        try (OutputStream out = conn.getOutputStream()) {
+            for (int sent = 0; sent < body.length; sent += PIECE) {
+                out.write(body, sent, Math.min(PIECE, body.length - sent));
+                deadline.restart();
+            }
         }
     }
 
@@ -167,10 +196,7 @@ public class AndroidPoster implements HttpPoster {
             }
             if (basicAuth.isPresent())
                 conn.setRequestProperty("Authorization", basicAuth.get());
-            try (DataOutputStream dout = new DataOutputStream(conn.getOutputStream())) {
-                dout.write(payload);
-                dout.flush();
-            }
+            send(conn, payload, deadline);
 
             String contentEncoding = conn.getContentEncoding();
             deadline.done(); // the headers are in: the body is read under the read timeout
@@ -249,10 +275,7 @@ public class AndroidPoster implements HttpPoster {
             if (basicAuth.isPresent())
                 conn.setRequestProperty("Authorization", basicAuth.get());
             conn.setDoOutput(true);
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(body);
-                out.flush();
-            }
+            send(conn, body, deadline);
 
             InputStream in = conn.getInputStream();
             deadline.done(); // the headers are in: the body is read under the read timeout
