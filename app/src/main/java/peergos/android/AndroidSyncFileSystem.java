@@ -374,6 +374,10 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                     if (written >= 1024*1024)
                         progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + filename);
                 }
+            } catch (IOException | RuntimeException | Error e) {
+                // made here, so all it holds is what this wrote: left, the next pass would take it for the file
+                file.delete();
+                throw e;
             }
             lastModified = file.lastModified() / 1000 * 1000;
         } else {

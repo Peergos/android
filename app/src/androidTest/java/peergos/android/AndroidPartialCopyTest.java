@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -278,6 +279,35 @@ public class AndroidPartialCopyTest {
             Assert.fail("A rename the storage cannot hold was synced");
         } catch (Exception expected) {}
         Assert.assertEquals(Map.of("a.txt", "renamed"), tree(device));
+    }
+
+    /** A new file is made before anything is read for it, so one whose read fails is removed again: left under its
+     *  name, the next pass would take it for a file of its own */
+    @Test
+    public void aNewFileWhoseReadFailsIsNotLeft() throws Exception {
+        reset(true);
+        AsyncReader failing = new AsyncReader() {
+            @Override
+            public CompletableFuture<Integer> readIntoArray(byte[] res, int offset, int length) {
+                CompletableFuture<Integer> failed = new CompletableFuture<>();
+                failed.completeExceptionally(new IOException("Gone"));
+                return failed;
+            }
+
+            @Override
+            public CompletableFuture<AsyncReader> reset() {
+                return CompletableFuture.completedFuture(this);
+            }
+
+            @Override
+            public void close() {}
+        };
+        try {
+            device.setBytes(Paths.get("f.txt"), 0, failing, 10, Optional.empty(), Optional.empty(), Optional.empty(),
+                    ResumeUploadProps.random(crypto), () -> false, x -> {});
+            Assert.fail("Nothing could be read");
+        } catch (Exception expected) {}
+        Assert.assertEquals(Map.of(), tree(device));
     }
 
     @Test
