@@ -280,12 +280,21 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         String oldName = f.getName();
         try {
             Uri from = f.getUri();
-            if (oldName != null && ! oldName.equals(name) && oldName.equalsIgnoreCase(name)) {
+            boolean caseOnly = oldName != null && ! oldName.equals(name) && oldName.equalsIgnoreCase(name);
+            if (caseOnly) {
                 from = DocumentsContract.renameDocument(context.getContentResolver(), from, name + ".sync-renaming");
                 if (from == null)
                     throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
             }
-            Uri renamed = DocumentsContract.renameDocument(context.getContentResolver(), from, name);
+            Uri renamed = null;
+            try {
+                renamed = DocumentsContract.renameDocument(context.getContentResolver(), from, name);
+            } finally {
+                // left under the name in between, a file changed on the other side before the next pass is synced
+                // back under it
+                if (renamed == null && caseOnly)
+                    putBack(from, name + ".sync-renaming", oldName);
+            }
             if (renamed == null)
                 throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
             String given = DocumentFile.fromSingleUri(context, renamed).getName();

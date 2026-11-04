@@ -131,6 +131,28 @@ public class AndroidRenameTest {
                 TestDocumentsProvider.METHOD_FAIL_RENAMES_TO, name, null);
     }
 
+    /** A change of case goes by way of another name, so a second rename that fails puts the file back: left under the
+     *  name in between, a file deleted there before the next pass would be synced back under it */
+    @Test
+    public void aChangeOfCaseThatFailsHalfwayIsPutBack() throws Exception {
+        SyncState state = new JdbcTreeState(":memory:");
+        write("photo.jpg", "contents");
+        sync(state);
+        Files.move(otherRoot.resolve("photo.jpg"), otherRoot.resolve("Photo.jpg"));
+        failRenamesTo("Photo.jpg");
+        try {
+            sync(state);
+            Assert.fail("The rename did not fail");
+        } catch (RuntimeException expected) {}
+        Assert.assertEquals(Map.of("photo.jpg", "contents"), tree(device));
+
+        failRenamesTo(null);
+        Files.delete(otherRoot.resolve("Photo.jpg"));
+        sync(state);
+        Assert.assertEquals(Map.of(), tree(device));
+        Assert.assertEquals(Map.of(), tree(other));
+    }
+
     /** A rename the storage can't hold is put back, and when that fails too, the error says where the file is */
     @Test
     public void aRenameTheStorageCannotHoldThatCannotBePutBack() throws Exception {
