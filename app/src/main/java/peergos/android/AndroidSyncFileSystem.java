@@ -273,11 +273,19 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
 
     /** A file found from its path is a single document, which DocumentFile can't rename, but its provider can. The
      *  provider replaces characters its storage can't hold, and the file is then put back, as the sync would look
-     *  for it under the name asked for. */
+     *  for it under the name asked for. Shared storage is case-insensitive, and the platform's providers number a
+     *  name that is taken (FileUtils.buildUniqueFile), by the file itself too, so a change of case alone goes by way
+     *  of another name. */
     private void rename(DocumentFile f, String name) {
         String oldName = f.getName();
         try {
-            Uri renamed = DocumentsContract.renameDocument(context.getContentResolver(), f.getUri(), name);
+            Uri from = f.getUri();
+            if (oldName != null && ! oldName.equals(name) && oldName.equalsIgnoreCase(name)) {
+                from = DocumentsContract.renameDocument(context.getContentResolver(), from, name + ".sync-renaming");
+                if (from == null)
+                    throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
+            }
+            Uri renamed = DocumentsContract.renameDocument(context.getContentResolver(), from, name);
             if (renamed == null)
                 throw new IllegalStateException("Couldn't rename " + f.getUri() + " to " + name);
             String given = DocumentFile.fromSingleUri(context, renamed).getName();

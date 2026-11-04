@@ -13,6 +13,7 @@ import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Locale;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -385,12 +386,24 @@ public class TestDocumentsProvider extends ContentProvider {
         return valid.toString();
     }
 
-    /** As the platform's providers rename (FileSystemProvider.renameDocument): the name is made valid the same way */
+    /** As the platform's providers rename (FileSystemProvider.renameDocument): the name is made valid the same way, and
+     *  numbered while it is taken (FileUtils.buildUniqueFile), on storage that ignores case, as shared storage does, so
+     *  the file being renamed takes it too */
     private String rename(String docId, String displayName) throws IOException {
         File src = fileFor(docId);
-        File dst = new File(src.getParentFile(), validFatName(displayName));
+        String name = validFatName(displayName);
+        int dot = name.lastIndexOf('.');
+        String base = dot < 0 ? name : name.substring(0, dot), ext = dot < 0 ? "" : name.substring(dot);
+        for (int n = 1; taken(src.getParentFile(), name); n++)
+            name = base + " (" + n + ")" + ext;
+        File dst = new File(src.getParentFile(), name);
         if (!src.renameTo(dst)) throw new IOException("rename failed: " + src + " -> " + dst);
         return docIdFor(dst);
+    }
+
+    private static boolean taken(File dir, String name) {
+        String[] names = dir.list();
+        return names != null && Arrays.stream(names).anyMatch(name::equalsIgnoreCase);
     }
 
     private void addRow(MatrixCursor c, File f, String docId) {

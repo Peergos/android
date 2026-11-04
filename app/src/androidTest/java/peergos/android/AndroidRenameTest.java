@@ -109,6 +109,21 @@ public class AndroidRenameTest {
         Assert.assertEquals(Map.of("b", "contents"), tree(device));
     }
 
+    /** The provider numbers a name that differs from the file's own only in case, as storage that ignores case has it
+     *  taken, by the file itself */
+    @Test
+    public void aChangeOfCaseOnTheOtherSideIsFollowed() throws Exception {
+        SyncState state = new JdbcTreeState(":memory:");
+        write("photo.jpg", "contents");
+        sync(state);
+        Files.move(otherRoot.resolve("photo.jpg"), otherRoot.resolve("Photo.jpg"));
+        sync(state);
+        Assert.assertEquals(Map.of("Photo.jpg", "contents"), tree(device));
+        sync(state);
+        Assert.assertEquals(Map.of("Photo.jpg", "contents"), tree(device));
+        Assert.assertEquals(Map.of("Photo.jpg", "contents"), tree(other));
+    }
+
     @Test
     public void changeOnBothSidesKeepsBoth() throws Exception {
         SyncState state = new JdbcTreeState(":memory:");
