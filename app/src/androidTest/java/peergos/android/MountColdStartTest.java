@@ -1,6 +1,7 @@
 package peergos.android;
 
 import android.content.ContentResolver;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
@@ -14,7 +15,9 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.DataInputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 
 import peergos.server.Main;
@@ -24,6 +27,7 @@ import peergos.shared.login.DeviceTokenStore;
 import peergos.shared.storage.ContentAddressedStorage;
 import peergos.shared.user.HttpPoster;
 import peergos.shared.user.UserContext;
+import peergos.shared.user.fs.AsyncReader;
 
 /** A request reaching the Files-app mount while a saved mount is still signing in, as one does when the process
  *  was started for it. It was answered "not found" a second or two before the document was there. Against the host
@@ -71,6 +75,33 @@ public class MountColdStartTest {
             Assert.assertTrue(c.moveToFirst());
         }
         Assert.assertTrue("answered before the sign-in had published", System.currentTimeMillis() - start >= 2_500);
+    }
+
+    /** An open for a type, as ImageDecoder makes, asks for the document's type first, which is answered at once
+     *  without one: the open still waits for the sign-in. */
+    @Test
+    public void aTypedOpenWaitsForTheSignIn() throws Exception {
+        byte[] text = "typed".getBytes(StandardCharsets.UTF_8);
+        user.getUserRoot().join().uploadFileWithHash("typed.txt", AsyncReader.build(text), text.length,
+                Optional.empty(), Optional.empty(), Optional.empty(), network, crypto, p -> {}).join();
+        PeergosSession.clear();
+        PeergosSession.signingIn();
+        new Thread(() -> {
+            try {
+                Thread.sleep(3_000);
+            } catch (InterruptedException e) {
+                return;
+            }
+            PeergosSession.publish(user, network, crypto);
+        }).start();
+        ContentResolver resolver = InstrumentationRegistry.getInstrumentation().getTargetContext().getContentResolver();
+        Uri doc = DocumentsContract.buildDocumentUri(DocumentsProviderBackend.AUTHORITY, "/" + user.username + "/typed.txt");
+        try (AssetFileDescriptor afd = resolver.openTypedAssetFileDescriptor(doc, "text/*", null);
+             DataInputStream in = new DataInputStream(afd.createInputStream())) {
+            byte[] read = new byte[text.length];
+            in.readFully(read);
+            Assert.assertArrayEquals(text, read);
+        }
     }
 
     @Test
