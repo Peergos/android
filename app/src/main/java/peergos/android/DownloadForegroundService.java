@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.os.Build;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.widget.Toast;
@@ -31,9 +32,12 @@ public class DownloadForegroundService extends Service {
     private static final String EXTRA_DOWNLOAD_ID = "peergos.android.DOWNLOAD_ID";
     private static final long CHECK_MILLIS = 2_000;
 
-    /** Started for and not finished. On the main thread only, as are starts and checks. */
+    /** Started for and not finished. On the checker's thread only, as are the checks. */
     private final Set<Long> downloads = new HashSet<>();
-    private final Handler handler = new Handler(Looper.getMainLooper());
+    /** Where DownloadManager is asked: a query of another process every few seconds would hold up the main thread,
+     *  and the screen with it. */
+    private final HandlerThread checker = new HandlerThread("PeergosDownloadCheck");
+    private Handler handler;
     private final Runnable check = this::check;
     private int lastStartId;
 
@@ -50,8 +54,14 @@ public class DownloadForegroundService extends Service {
     }
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        checker.start();
+        handler = new Handler(checker.getLooper());
+    }
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        lastStartId = startId;
         createNotificationChannel();
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Peergos")
@@ -67,10 +77,15 @@ public class DownloadForegroundService extends Service {
             stopSelf(startId);
             return START_NOT_STICKY;
         }
-        if (intent != null && intent.hasExtra(EXTRA_DOWNLOAD_ID))
-            downloads.add(intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1));
-        handler.removeCallbacks(check);
-        handler.post(check);
+        Long download = intent != null && intent.hasExtra(EXTRA_DOWNLOAD_ID)
+                ? intent.getLongExtra(EXTRA_DOWNLOAD_ID, -1) : null;
+        handler.post(() -> {
+            lastStartId = startId;
+            if (download != null)
+                downloads.add(download);
+            handler.removeCallbacks(check);
+            check();
+        });
         return START_NOT_STICKY;
     }
 
@@ -91,7 +106,8 @@ public class DownloadForegroundService extends Service {
             }
         }
         if (finished)
-            Toast.makeText(getApplicationContext(), "Downloading Complete", Toast.LENGTH_SHORT).show();
+            new Handler(Looper.getMainLooper()).post(() ->
+                    Toast.makeText(getApplicationContext(), "Downloading Complete", Toast.LENGTH_SHORT).show());
         // one removed from the downloads list is not listed at all, and as over as one that failed
         downloads.retainAll(running);
         if (! downloads.isEmpty()) {
@@ -114,6 +130,7 @@ public class DownloadForegroundService extends Service {
     @Override
     public void onDestroy() {
         handler.removeCallbacks(check);
+        checker.quit();
         super.onDestroy();
     }
 
