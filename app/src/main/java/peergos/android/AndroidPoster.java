@@ -60,12 +60,15 @@ public class AndroidPoster implements HttpPoster {
     static final class Deadline {
         private static final int ACTIVE = 0, DONE = 1, CUT = 2;
         private final HttpURLConnection conn;
-        private final int timeoutMillis;
+        private final long timeoutNanos;
         private final ScheduledExecutorService timer;
         /** Done and cut each end the deadline, and only one of them can: a cut that has already started when
          *  the answer arrives doesn't then disconnect it */
         private final AtomicInteger state = new AtomicInteger(ACTIVE);
-        private ScheduledFuture<?> cut;
+        private volatile long lastProgress = System.nanoTime();
+        /** The request's one scheduled check: checkIn and done take turns with it, so one re-armed as the
+         *  request finishes is cancelled with it */
+        private ScheduledFuture<?> scheduled;
 
         Deadline(HttpURLConnection conn, int timeoutMillis) {
             this(conn, timeoutMillis, DEADLINES);
@@ -73,20 +76,29 @@ public class AndroidPoster implements HttpPoster {
 
         Deadline(HttpURLConnection conn, int timeoutMillis, ScheduledExecutorService timer) {
             this.conn = conn;
-            this.timeoutMillis = timeoutMillis;
+            this.timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
             this.timer = timer;
-            restart();
+            if (timeoutMillis > 0)
+                checkIn(timeoutNanos);
         }
 
         /** The request has moved: its whole timeout runs again from now */
-        void restart() {
-            if (cut != null)
-                cut.cancel(false);
-            if (timeoutMillis > 0 && state.get() == ACTIVE)
-                cut = timer.schedule(() -> {
-                    if (state.compareAndSet(ACTIVE, CUT))
-                        conn.disconnect();
-                }, timeoutMillis, TimeUnit.MILLISECONDS);
+        void progress() {
+            lastProgress = System.nanoTime();
+        }
+
+        /** Cuts a request that hasn't moved for its whole timeout, or else looks again when it would have */
+        private void check() {
+            long left = lastProgress + timeoutNanos - System.nanoTime();
+            if (left > 0)
+                checkIn(left);
+            else if (state.compareAndSet(ACTIVE, CUT))
+                conn.disconnect();
+        }
+
+        private synchronized void checkIn(long nanos) {
+            if (state.get() == ACTIVE)
+                scheduled = timer.schedule(this::check, nanos, TimeUnit.NANOSECONDS);
         }
 
         boolean passed() {
@@ -95,15 +107,17 @@ public class AndroidPoster implements HttpPoster {
 
         void done() {
             state.compareAndSet(ACTIVE, DONE);
-            if (cut != null)
-                cut.cancel(false);
+            synchronized (this) {
+                if (scheduled != null)
+                    scheduled.cancel(false);
+            }
         }
     }
 
-    /** How much of a body is sent between one restart of its deadline and the next */
+    /** How much of a body is sent between one sign of progress and the next */
     private static final int PIECE = 64 * 1024;
 
-    /** Sends a body, restarting the deadline with each piece the connection takes: one that
+    /** Sends a body, marking progress with each piece the connection takes: one that
      *  stops is cut at the timeout, one that is only slow, as on a mobile uplink that several
      *  blocks share, is not. A buffered body is written all at once while the response is
      *  awaited, with no progress to see, so one bigger than a piece is streamed. */
@@ -113,7 +127,7 @@ public class AndroidPoster implements HttpPoster {
         try (OutputStream out = conn.getOutputStream()) {
             for (int sent = 0; sent < body.length; sent += PIECE) {
                 out.write(body, sent, Math.min(PIECE, body.length - sent));
-                deadline.restart();
+                deadline.progress();
             }
         }
     }

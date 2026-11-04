@@ -160,6 +160,7 @@ public class AndroidPosterDeviceTimeoutTest {
             p.put("block", BIG, Collections.emptyMap(), 2_000).join();
             p.post("api", BIG, false, 2_000).join();
         }
+        assertEquals("deadlines left scheduled by finished requests", 0, AndroidPoster.deadlinesPending());
     }
 
     private static void assertTimesOut(CompletableFuture<byte[]> request) {

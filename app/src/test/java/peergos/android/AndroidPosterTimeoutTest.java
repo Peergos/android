@@ -164,6 +164,7 @@ public class AndroidPosterTimeoutTest {
             p.put("block", SLOW, Collections.emptyMap(), 2_000).join();
             p.post("api", SLOW, false, 2_000).join();
         }
+        assertEquals("deadlines left scheduled by finished requests", 0, AndroidPoster.deadlinesPending());
     }
 
     /** Holds the deadline's check for the test to run when it chooses, as if it had started at that moment. */
