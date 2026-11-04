@@ -6,8 +6,10 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
@@ -18,8 +20,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -157,6 +163,62 @@ public class AndroidPosterTimeoutTest {
             AndroidPoster p = new AndroidPoster(new URL("http://127.0.0.1:" + slow.getLocalPort() + "/"), true);
             p.put("block", SLOW, Collections.emptyMap(), 2_000).join();
             p.post("api", SLOW, false, 2_000).join();
+        }
+    }
+
+    /** Holds the deadline's check for the test to run when it chooses, as if it had started at that moment. */
+    private static final class HeldTimer extends ScheduledThreadPoolExecutor {
+        volatile Runnable held;
+
+        HeldTimer() {
+            super(1);
+            setRemoveOnCancelPolicy(true);
+        }
+
+        @Override
+        public ScheduledFuture<?> schedule(Runnable task, long delay, TimeUnit unit) {
+            held = task;
+            return super.schedule(task, 1, TimeUnit.DAYS);
+        }
+    }
+
+    private static final class Cuttable extends HttpURLConnection {
+        volatile boolean cut;
+
+        Cuttable() throws MalformedURLException {
+            super(new URL("http://127.0.0.1/"));
+        }
+
+        @Override
+        public void disconnect() {
+            cut = true;
+        }
+
+        @Override
+        public boolean usingProxy() {
+            return false;
+        }
+
+        @Override
+        public void connect() {
+        }
+    }
+
+    /** An answer that arrives as its deadline fires is the answer, not a timeout: cut then, a POST that succeeded
+     *  would be reported as timed out, and retried. */
+    @Test(timeout = 30_000)
+    public void anAnswerThatArrivesAsItsDeadlineFiresIsNotCut() throws Exception {
+        HeldTimer timer = new HeldTimer();
+        try {
+            Cuttable conn = new Cuttable();
+            AndroidPoster.Deadline deadline = new AndroidPoster.Deadline(conn, 1, timer);
+            Thread.sleep(20); // its whole timeout passes, so its check is due
+            deadline.done(); // as the answer arrives
+            timer.held.run(); // and the check, already started, goes on
+            assertFalse("the connection was cut after its answer had arrived", conn.cut);
+            assertFalse("an answer in time was reported as a timeout", deadline.passed());
+        } finally {
+            timer.shutdownNow();
         }
     }
 

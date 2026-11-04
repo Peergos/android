@@ -18,9 +18,11 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.zip.GZIPInputStream;
 
@@ -56,32 +58,43 @@ public class AndroidPoster implements HttpPoster {
 
     /** A timeout of 0 or less is none, as it is for HttpURLConnection's own. */
     static final class Deadline {
+        private static final int ACTIVE = 0, DONE = 1, CUT = 2;
         private final HttpURLConnection conn;
         private final int timeoutMillis;
+        private final ScheduledExecutorService timer;
+        /** Done and cut each end the deadline, and only one of them can: a cut that has already started when
+         *  the answer arrives doesn't then disconnect it */
+        private final AtomicInteger state = new AtomicInteger(ACTIVE);
         private ScheduledFuture<?> cut;
-        private volatile boolean passed;
 
         Deadline(HttpURLConnection conn, int timeoutMillis) {
+            this(conn, timeoutMillis, DEADLINES);
+        }
+
+        Deadline(HttpURLConnection conn, int timeoutMillis, ScheduledExecutorService timer) {
             this.conn = conn;
             this.timeoutMillis = timeoutMillis;
+            this.timer = timer;
             restart();
         }
 
         /** The request has moved: its whole timeout runs again from now */
         void restart() {
-            done();
-            if (timeoutMillis > 0)
-                cut = DEADLINES.schedule(() -> {
-                    passed = true;
-                    conn.disconnect();
+            if (cut != null)
+                cut.cancel(false);
+            if (timeoutMillis > 0 && state.get() == ACTIVE)
+                cut = timer.schedule(() -> {
+                    if (state.compareAndSet(ACTIVE, CUT))
+                        conn.disconnect();
                 }, timeoutMillis, TimeUnit.MILLISECONDS);
         }
 
         boolean passed() {
-            return passed;
+            return state.get() == CUT;
         }
 
         void done() {
+            state.compareAndSet(ACTIVE, DONE);
             if (cut != null)
                 cut.cancel(false);
         }
