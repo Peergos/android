@@ -64,8 +64,8 @@ public class TestDocumentsProvider extends ContentProvider {
 
     /** Test-only: wipe the root and (optionally) seed it with N random files
      *  in the provider's own process. extras: count (int), seedLow (long, low
-     *  32 bits of the seed), minSize (long), maxSize (long), and moveSupported (boolean, default true), as not
-     *  every provider can move documents. */
+     *  32 bits of the seed), minSize (long), maxSize (long), moveSupported (boolean, default true), as not
+     *  every provider can move documents, and locale (a language tag, default the system's), the provider's own. */
     public static final String METHOD_RESET_AND_SEED = "test:resetAndSeed";
     /** Test-only: every file and folder under the root, but the sync's staging folder, with each file's size, first
      *  64 bytes and SHA-256, worked out here so no file has to cross the process boundary. Also whether the staging
@@ -80,11 +80,13 @@ public class TestDocumentsProvider extends ContentProvider {
 
     private File rootDir;
     private volatile boolean moveSupported = true;
+    private Locale systemLocale;
 
     @Override
     public boolean onCreate() {
         rootDir = new File(getContext().getCacheDir(), "test-sync-root");
         rootDir.mkdirs();
+        systemLocale = Locale.getDefault();
         return true;
     }
 
@@ -215,6 +217,8 @@ public class TestDocumentsProvider extends ContentProvider {
             }
             if (METHOD_RESET_AND_SEED.equals(method)) {
                 moveSupported = extras.getBoolean("moveSupported", true);
+                String locale = extras.getString("locale");
+                Locale.setDefault(locale == null ? systemLocale : Locale.forLanguageTag(locale));
                 int count = extras.getInt("count");
                 long seed = extras.getLong("seed");
                 long minSize = extras.getLong("minSize");
@@ -352,21 +356,26 @@ public class TestDocumentsProvider extends ContentProvider {
         return docIdFor(child);
     }
 
-    /** The name the platform's own providers give a new document (FileUtils.buildValidFatFilename and
-     *  buildUniqueFile): a character a FAT volume can't hold becomes '_', and a name whose extension does not go
-     *  with the type asked for gets the type's extension added. */
+    /** The name the platform's own providers give a new document (FileUtils.buildValidFatFilename, splitFileName and
+     *  buildFile): a character a FAT volume can't hold becomes '_', and a name whose extension, lower-cased in the
+     *  provider's locale, does not go with the type asked for gets the type's extension added. */
     static String platformName(String mime, String displayName) {
         String name = validFatName(displayName);
-        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime) || "application/octet-stream".equals(mime))
+        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
             return name;
         int dot = name.lastIndexOf('.');
-        String ext = dot < 0 ? null : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+        String base = dot < 0 ? name : name.substring(0, dot);
+        String ext = dot < 0 ? null : name.substring(dot + 1);
         MimeTypeMap types = MimeTypeMap.getSingleton();
-        String typeOfExt = ext == null ? null : types.getMimeTypeFromExtension(ext);
-        String extOfType = types.getExtensionFromMimeType(mime);
-        if (mime.equals(typeOfExt) || extOfType == null || extOfType.equals(ext))
-            return name;
-        return name + "." + extOfType;
+        String typeOfExt = ext == null ? null : types.getMimeTypeFromExtension(ext.toLowerCase());
+        if (typeOfExt == null)
+            typeOfExt = "application/octet-stream";
+        String extOfType = "application/octet-stream".equals(mime) ? null : types.getExtensionFromMimeType(mime);
+        if (! mime.equals(typeOfExt) && ! Objects.equals(ext, extOfType)) {
+            base = name;
+            ext = extOfType;
+        }
+        return ext == null || ext.isEmpty() ? base : base + "." + ext;
     }
 
     private static String validFatName(String displayName) {

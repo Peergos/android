@@ -61,6 +61,8 @@ import peergos.shared.util.Pair;
 import peergos.shared.util.Triple;
 
 public class AndroidSyncFileSystem extends StagedFileSystem {
+    private static final String ANY_TYPE = "application/octet-stream";
+
     private final Uri rootUri;
     private final Context context;
     private final Crypto crypto;
@@ -516,14 +518,19 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
      *  A provider names a new document itself: it adds the type's extension to a name whose own extension does
      *  not go with the type (Report.DOCX, read as a zip, becomes Report.DOCX.zip), and replaces characters its
      *  storage can't hold (a:b.txt becomes a_b.txt). Everything after finds the file by its name - the copy being
-     *  put in place, the next sync - so a file under another name would be lost to it. Asked for under the type its
-     *  own name implies, a name is only changed for the second reason, or for a file of that name that appeared
-     *  meanwhile, which no name given here can get round: that file is removed again, and the sync is told what the
-     *  storage did, so it skips the file. */
+     *  put in place, the next sync - so a file under another name would be lost to it. It is asked for under the
+     *  type its own name implies, and failing that as plain bytes, which have no extension to add: the platform's
+     *  providers lower-case the extension in their own locale (FileUtils.splitFileName), and in Turkish the I of
+     *  .HEIC becomes a dotless i, of no type. A name still changed is one the storage can't hold, or one that
+     *  appeared meanwhile, which no name given here can get round: that file is removed again, and the sync is
+     *  told what the storage did, so it skips the file. */
     private static DocumentFile createNamed(DocumentFile dir, String name) throws IOException {
-        DocumentFile file = dir.createFile(typeOfName(name), name);
-        if (file == null)
-            throw new FileNotFoundException("Couldn't create local file: " + name);
+        String type = typeOfName(name);
+        DocumentFile file = createFile(dir, type, name);
+        if (! name.equals(file.getName()) && ! type.equals(ANY_TYPE)) {
+            file.delete();
+            file = createFile(dir, ANY_TYPE, name);
+        }
         if (! name.equals(file.getName())) {
             String given = file.getName();
             file.delete();
@@ -532,12 +539,19 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         return file;
     }
 
+    private static DocumentFile createFile(DocumentFile dir, String type, String name) throws FileNotFoundException {
+        DocumentFile file = dir.createFile(type, name);
+        if (file == null)
+            throw new FileNotFoundException("Couldn't create local file: " + name);
+        return file;
+    }
+
     /** The type a provider gives a file by its name, which leaves it no reason to change the name. */
     private static String typeOfName(String name) {
         int dot = name.lastIndexOf('.');
         String type = dot < 0 ? null
                 : MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substring(dot + 1).toLowerCase(Locale.ROOT));
-        return type != null ? type : "application/octet-stream";
+        return type != null ? type : ANY_TYPE;
     }
 
     private Bitmap generateImageThumbnail(Uri uri) throws IOException {

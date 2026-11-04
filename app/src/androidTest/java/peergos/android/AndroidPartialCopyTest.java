@@ -57,6 +57,10 @@ public class AndroidPartialCopyTest {
     private Path otherRoot;
 
     private void reset(boolean moveSupported) throws IOException {
+        reset(moveSupported, null);
+    }
+
+    private void reset(boolean moveSupported, String providerLocale) throws IOException {
         Uri authorityUri = Uri.parse("content://" + TestDocumentsProvider.AUTHORITY);
         Bundle seed = new Bundle();
         seed.putInt("count", 0);
@@ -64,6 +68,7 @@ public class AndroidPartialCopyTest {
         seed.putLong("minSize", 0);
         seed.putLong("maxSize", 0);
         seed.putBoolean("moveSupported", moveSupported);
+        seed.putString("locale", providerLocale);
         ctx.getContentResolver().call(authorityUri, TestDocumentsProvider.METHOD_RESET_AND_SEED, null, seed);
         Uri treeUri = DocumentsContract.buildTreeDocumentUri(TestDocumentsProvider.AUTHORITY, TestDocumentsProvider.ROOT_ID);
         device = new AndroidSyncFileSystem(treeUri, ctx, crypto);
@@ -195,6 +200,26 @@ public class AndroidPartialCopyTest {
             Assert.assertEquals("move " + moveSupported, expected, tree(device));
             Assert.assertEquals("move " + moveSupported, expected, tree(other));
             Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
+        }
+    }
+
+    /** The platform's providers lower-case an extension in their own locale to find its type, and in Turkish the I of
+     *  a capital one becomes a dotless i: .HEIC and .GIF are then of no type, and would get .heic and .gif added */
+    @Test
+    public void aCapitalExtensionInTurkish() throws Exception {
+        reset(true, "tr");
+        try {
+            SyncState state = new JdbcTreeState(":memory:");
+            Files.write(otherRoot.resolve("IMG_0001.HEIC"), "photo".getBytes());
+            Files.write(otherRoot.resolve("clip.GIF"), "animation".getBytes());
+            Map<String, String> expected = Map.of("IMG_0001.HEIC", "photo", "clip.GIF", "animation");
+            sync(state);
+            Assert.assertEquals(expected, tree(device));
+            sync(state);
+            Assert.assertEquals(expected, tree(device));
+            Assert.assertEquals(expected, tree(other));
+        } finally {
+            reset(true);
         }
     }
 
