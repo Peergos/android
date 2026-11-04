@@ -104,8 +104,31 @@ public class MountColdStartTest {
         }
     }
 
+    /** A sign-in slower than one request's wait, as on a slow cold start: a request made once that wait ran out still
+     *  waits for it, rather than being answered "not found" while it is under way. */
     @Test
-    public void aSignInThatNeverCameIsWaitedForOnce() throws Exception {
+    public void aSlowSignInIsWaitedForAfterAWaitRanOut() throws Exception {
+        PeergosSession.clear();
+        PeergosSession.signingIn();
+        new Thread(() -> {
+            try {
+                Thread.sleep(PeergosSession.SIGN_IN_WAIT_MILLIS + 3_000);
+            } catch (InterruptedException e) {
+                return;
+            }
+            PeergosSession.publish(user, network, crypto);
+        }).start();
+        try (Cursor c = query("/" + user.username)) {
+            Assert.assertNull("signed in before the first wait ran out", c);
+        }
+        try (Cursor c = query("/" + user.username)) {
+            Assert.assertNotNull("the sign-in under way was not waited for once a wait had run out", c);
+            Assert.assertTrue(c.moveToFirst());
+        }
+    }
+
+    @Test
+    public void aSignInThatNeverCameIsNotWaitedForPastItsTime() throws Exception {
         PeergosSession.clear();
         PeergosSession.signingIn();
         long start = System.currentTimeMillis();
@@ -114,11 +137,17 @@ public class MountColdStartTest {
         }
         long waited = System.currentTimeMillis() - start;
         Assert.assertTrue("gave up after " + waited + " ms", waited >= PeergosSession.SIGN_IN_WAIT_MILLIS - 500);
-        start = System.currentTimeMillis();
         try (Cursor c = query("/" + user.username)) {
             Assert.assertNull(c);
         }
-        Assert.assertTrue("waited again", System.currentTimeMillis() - start < 2_000);
+        waited = System.currentTimeMillis() - start;
+        Assert.assertTrue("gave up on the sign-in after " + waited + " ms",
+                waited >= PeergosSession.SIGN_IN_GIVE_UP_MILLIS - 500);
+        long again = System.currentTimeMillis();
+        try (Cursor c = query("/" + user.username)) {
+            Assert.assertNull(c);
+        }
+        Assert.assertTrue("waited past the sign-in's time", System.currentTimeMillis() - again < 2_000);
         PeergosSession.publish(user, network, crypto);
     }
 

@@ -19,8 +19,13 @@ public final class PeergosSession {
      *  the 20 s the Files app gives a call to a provider before it kills the provider as not responding
      *  (DocumentsUI's PROVIDER_ANR_TIMEOUT). */
     public static final long SIGN_IN_WAIT_MILLIS = 10_000;
+    /** How long after it began the sign-in at start is waited for at all, should it neither publish nor fail: one that
+     *  hangs holds requests up no longer than this. */
+    static final long SIGN_IN_GIVE_UP_MILLIS = 2 * SIGN_IN_WAIT_MILLIS;
     /** Set at process start while a saved mount signs in, and let go by the session it publishes. */
     private static volatile CountDownLatch signingIn;
+    /** The System.nanoTime() after which the sign-in at start is not waited for */
+    private static volatile long signInGiveUpAt;
 
     private PeergosSession() {}
 
@@ -35,6 +40,7 @@ public final class PeergosSession {
 
     /** A saved mount is signing in, so a session is on its way. */
     public static void signingIn() {
+        signInGiveUpAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SIGN_IN_GIVE_UP_MILLIS);
         signingIn = new CountDownLatch(1);
     }
 
@@ -50,13 +56,14 @@ public final class PeergosSession {
      *
      *  The process is often started for a request: an app reopening a document it holds a grant for, right after
      *  Peergos' process was stopped. Answered "not signed in" while the mount is a second or two from being, some
-     *  apps take the document for gone and drop it. Waited for once: a sign-in that has not published in that time
-     *  has failed, and later requests are answered at once. */
+     *  apps take the document for gone and drop it. A slow sign-in is waited for by a request made after another's
+     *  wait ran out too, though not past SIGN_IN_GIVE_UP_MILLIS from its start. */
     public static Optional<UserContext> awaitContext(long millis) throws InterruptedException {
         CountDownLatch waiting = signingIn;
         if (context == null && waiting != null) {
-            waiting.await(millis, TimeUnit.MILLISECONDS);
-            signingIn = null;
+            long nanos = Math.min(TimeUnit.MILLISECONDS.toNanos(millis), signInGiveUpAt - System.nanoTime());
+            if (nanos > 0)
+                waiting.await(nanos, TimeUnit.NANOSECONDS);
         }
         return context();
     }
