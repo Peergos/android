@@ -21,6 +21,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -258,7 +259,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
 
     @Override
     public long getLastModified(Path p) {
-        return getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p)).lastModified() / 1000 * 1000;
+        return getByPath(p).orElseThrow(() -> new IllegalStateException("Absent file: " + p)).lastModified();
     }
 
     @Override
@@ -341,7 +342,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                         progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + filename);
                 }
             }
-            lastModified = file.lastModified() / 1000 * 1000;
+            lastModified = file.lastModified();
         } else {
             DocumentFile existing = existingFile.get();
             try (ParcelFileDescriptor pfd = context.getContentResolver().openFileDescriptor(existing.getUri(), "rw");
@@ -359,9 +360,9 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
                         progress.accept("Downloaded " + (written/1024/1024) + " / " + (size / 1024/1024) + " MiB of " + filename);
                 }
             }
-            lastModified = existing.lastModified() / 1000 * 1000;
+            lastModified = existing.lastModified();
         }
-        return Optional.of(LocalDateTime.ofEpochSecond(lastModified / 1_000, (int) ((lastModified % 1_000) * 1_000_000), ZoneOffset.UTC));
+        return Optional.of(LocalDateTime.ofInstant(Instant.ofEpochMilli(lastModified), ZoneOffset.UTC));
     }
 
     /** Each copy gets a folder of its own, holding a file with the target's name, so it can be moved into place */
@@ -645,7 +646,7 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         stream.forEach(kid -> {
             if (isPartialCopies(p, kid))
                 return;
-            FileProps props = new FileProps(p.resolve(kid.name).toString(), kid.modified / 1000 * 1000, kid.size, Optional.empty());
+            FileProps props = new FileProps(p.resolve(kid.name).toString(), kid.modified, kid.size, Optional.empty());
             if (kid.isFile()) {
                 onFile.accept(props);
             } else {
