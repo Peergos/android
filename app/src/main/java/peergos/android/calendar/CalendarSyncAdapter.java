@@ -21,9 +21,10 @@ import peergos.shared.user.UserContext;
  * bridge serves, in process, through {@link CalendarStore}.
  *
  * The session comes from {@link PeergosSession}, which the app publishes once it has
- * signed in. When there is no session the sync is a no-op rather than an error: the user
- * has not logged in yet, or the app was evicted, and the next periodic sync after they
- * open it will do the work. Reporting a failure instead would earn us exponential backoff
+ * signed in, or that its saved mount publishes when the process starts, which a sync waits
+ * for. When there is no session the sync is a no-op rather than an error: the user has not
+ * logged in yet, or the mount could not sign in, and the next periodic sync after they
+ * open the app will do the work. Reporting a failure instead would earn us exponential backoff
  * for a state that resolves itself.
  */
 public class CalendarSyncAdapter extends AbstractThreadedSyncAdapter {
@@ -37,7 +38,15 @@ public class CalendarSyncAdapter extends AbstractThreadedSyncAdapter {
     @Override
     public void onPerformSync(Account account, Bundle extras, String authority,
                               ContentProviderClient provider, SyncResult syncResult) {
-        Optional<UserContext> session = PeergosSession.context();
+        // A sync is often what started the process, and the saved mount's sign-in at start is then a second or
+        // two from publishing: without waiting for it, every sync that found the process stopped did nothing.
+        Optional<UserContext> session;
+        try {
+            session = PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
         if (session.isEmpty()) {
             Log.i(TAG, "No Peergos session; leaving the calendars as they are");
             return;

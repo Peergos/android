@@ -13,6 +13,8 @@ import android.webkit.MimeTypeMap;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Locale;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Objects;
@@ -63,8 +65,8 @@ public class TestDocumentsProvider extends ContentProvider {
 
     /** Test-only: wipe the root and (optionally) seed it with N random files
      *  in the provider's own process. extras: count (int), seedLow (long, low
-     *  32 bits of the seed), minSize (long), maxSize (long), and moveSupported (boolean, default true), as not
-     *  every provider can move documents. */
+     *  32 bits of the seed), minSize (long), maxSize (long), moveSupported (boolean, default true), as not
+     *  every provider can move documents, and locale (a language tag, default the system's), the provider's own. */
     public static final String METHOD_RESET_AND_SEED = "test:resetAndSeed";
     /** Test-only: every file and folder under the root, but the sync's staging folder, with each file's size, first
      *  64 bytes and SHA-256, worked out here so no file has to cross the process boundary. Also whether the staging
@@ -75,15 +77,21 @@ public class TestDocumentsProvider extends ContentProvider {
     /** Test-only: moves what is at the path in arg to extras' to, folders included, as another app editing the files
      *  would. An error, such as there being nothing to move, is returned as error, as exceptions don't cross processes */
     public static final String METHOD_MOVE_PATH = "test:move";
+    /** Test-only: a rename to the name in arg fails, as the platform's providers' does when the file can't be renamed
+     *  (FileSystemProvider.renameDocument throws IllegalStateException), until this is called without a name */
+    public static final String METHOD_FAIL_RENAMES_TO = "test:failRenamesTo";
     private static final String STAGING_DIR = ".peergos-partial-downloads";
 
     private File rootDir;
     private volatile boolean moveSupported = true;
+    private volatile String failRenamesTo;
+    private Locale systemLocale;
 
     @Override
     public boolean onCreate() {
         rootDir = new File(getContext().getCacheDir(), "test-sync-root");
         rootDir.mkdirs();
+        systemLocale = Locale.getDefault();
         return true;
     }
 
@@ -194,6 +202,10 @@ public class TestDocumentsProvider extends ContentProvider {
                 out.putParcelable(EXTRA_URI, DocumentsContract.buildDocumentUriUsingTree(docUri, docIdFor(dst)));
                 return out;
             }
+            if (METHOD_FAIL_RENAMES_TO.equals(method)) {
+                failRenamesTo = arg;
+                return null;
+            }
             if (METHOD_TREE.equals(method))
                 return tree();
             if (METHOD_SET_MODIFIED.equals(method)) {
@@ -214,6 +226,9 @@ public class TestDocumentsProvider extends ContentProvider {
             }
             if (METHOD_RESET_AND_SEED.equals(method)) {
                 moveSupported = extras.getBoolean("moveSupported", true);
+                failRenamesTo = null;
+                String locale = extras.getString("locale");
+                Locale.setDefault(locale == null ? systemLocale : Locale.forLanguageTag(locale));
                 int count = extras.getInt("count");
                 long seed = extras.getLong("seed");
                 long minSize = extras.getLong("minSize");
@@ -221,6 +236,9 @@ public class TestDocumentsProvider extends ContentProvider {
                 resetAndSeed(count, seed, minSize, maxSize);
                 return null;
             }
+        } catch (IllegalStateException e) {
+            // crosses to the caller as it is, as the platform's providers' does
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -342,7 +360,7 @@ public class TestDocumentsProvider extends ContentProvider {
 
     private String createChild(String parentId, String mime, String displayName) throws IOException {
         File parent = fileFor(parentId);
-        File child = new File(parent, displayName);
+        File child = new File(parent, platformName(mime, displayName));
         if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
             if (!child.mkdir() && !child.isDirectory()) throw new IOException("mkdir failed: " + child);
         } else {
@@ -351,11 +369,55 @@ public class TestDocumentsProvider extends ContentProvider {
         return docIdFor(child);
     }
 
+    /** The name the platform's own providers give a new document (FileUtils.buildValidFatFilename, splitFileName and
+     *  buildFile): a character a FAT volume can't hold becomes '_', and a name whose extension, lower-cased in the
+     *  provider's locale, does not go with the type asked for gets the type's extension added. */
+    static String platformName(String mime, String displayName) {
+        String name = validFatName(displayName);
+        if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime))
+            return name;
+        int dot = name.lastIndexOf('.');
+        String base = dot < 0 ? name : name.substring(0, dot);
+        String ext = dot < 0 ? null : name.substring(dot + 1);
+        MimeTypeMap types = MimeTypeMap.getSingleton();
+        String typeOfExt = ext == null ? null : types.getMimeTypeFromExtension(ext.toLowerCase());
+        if (typeOfExt == null)
+            typeOfExt = "application/octet-stream";
+        String extOfType = "application/octet-stream".equals(mime) ? null : types.getExtensionFromMimeType(mime);
+        if (! mime.equals(typeOfExt) && ! Objects.equals(ext, extOfType)) {
+            base = name;
+            ext = extOfType;
+        }
+        return ext == null || ext.isEmpty() ? base : base + "." + ext;
+    }
+
+    private static String validFatName(String displayName) {
+        StringBuilder valid = new StringBuilder();
+        for (char c : displayName.toCharArray())
+            valid.append(c < 0x20 || c == 0x7f || "\"*/:<>?\\|".indexOf(c) >= 0 ? '_' : c);
+        return valid.toString();
+    }
+
+    /** As the platform's providers rename (FileSystemProvider.renameDocument): the name is made valid the same way, and
+     *  numbered while it is taken (FileUtils.buildUniqueFile), on storage that ignores case, as shared storage does, so
+     *  the file being renamed takes it too */
     private String rename(String docId, String displayName) throws IOException {
+        if (displayName.equals(failRenamesTo))
+            throw new IllegalStateException("Failed to rename to " + displayName);
         File src = fileFor(docId);
-        File dst = new File(src.getParentFile(), displayName);
+        String name = validFatName(displayName);
+        int dot = name.lastIndexOf('.');
+        String base = dot < 0 ? name : name.substring(0, dot), ext = dot < 0 ? "" : name.substring(dot);
+        for (int n = 1; taken(src.getParentFile(), name); n++)
+            name = base + " (" + n + ")" + ext;
+        File dst = new File(src.getParentFile(), name);
         if (!src.renameTo(dst)) throw new IOException("rename failed: " + src + " -> " + dst);
         return docIdFor(dst);
+    }
+
+    private static boolean taken(File dir, String name) {
+        String[] names = dir.list();
+        return names != null && Arrays.stream(names).anyMatch(name::equalsIgnoreCase);
     }
 
     private void addRow(MatrixCursor c, File f, String docId) {

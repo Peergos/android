@@ -43,6 +43,13 @@ public class DocumentsProviderBackend implements MountBackend {
         sync(config.syncContacts, ContactsContract.AUTHORITY, SyncPermission.CONTACTS, context.username);
     }
 
+    /** The saved mount's sign-in at start failed, on its own thread: a request waiting for it is answered now
+     *  rather than when its wait runs out. */
+    @Override
+    public void enableFailed(String error) {
+        PeergosSession.notSigningIn();
+    }
+
     private void sync(boolean wanted, String authority, SyncPermission permission, String username) {
         if (! wanted) {
             PeergosAccount.stopSyncing(appContext, authority);
