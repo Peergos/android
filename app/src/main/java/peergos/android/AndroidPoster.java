@@ -18,9 +18,12 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import java.util.zip.GZIPInputStream;
 
@@ -56,41 +59,66 @@ public class AndroidPoster implements HttpPoster {
 
     /** A timeout of 0 or less is none, as it is for HttpURLConnection's own. */
     static final class Deadline {
+        private static final int ACTIVE = 0, DONE = 1, CUT = 2;
         private final HttpURLConnection conn;
-        private final int timeoutMillis;
-        private ScheduledFuture<?> cut;
-        private volatile boolean passed;
+        private final long timeoutNanos;
+        private final ScheduledExecutorService timer;
+        /** Done and cut each end the deadline, and only one of them can: a cut that has already started when
+         *  the answer arrives doesn't then disconnect it */
+        private final AtomicInteger state = new AtomicInteger(ACTIVE);
+        private volatile long lastProgress = System.nanoTime();
+        /** The request's one scheduled check: checkIn and done take turns with it, so one re-armed as the
+         *  request finishes is cancelled with it */
+        private ScheduledFuture<?> scheduled;
 
         Deadline(HttpURLConnection conn, int timeoutMillis) {
+            this(conn, timeoutMillis, DEADLINES);
+        }
+
+        Deadline(HttpURLConnection conn, int timeoutMillis, ScheduledExecutorService timer) {
             this.conn = conn;
-            this.timeoutMillis = timeoutMillis;
-            restart();
+            this.timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+            this.timer = timer;
+            if (timeoutMillis > 0)
+                checkIn(timeoutNanos);
         }
 
         /** The request has moved: its whole timeout runs again from now */
-        void restart() {
-            done();
-            if (timeoutMillis > 0)
-                cut = DEADLINES.schedule(() -> {
-                    passed = true;
-                    conn.disconnect();
-                }, timeoutMillis, TimeUnit.MILLISECONDS);
+        void progress() {
+            lastProgress = System.nanoTime();
+        }
+
+        /** Cuts a request that hasn't moved for its whole timeout, or else looks again when it would have */
+        private void check() {
+            long left = lastProgress + timeoutNanos - System.nanoTime();
+            if (left > 0)
+                checkIn(left);
+            else if (state.compareAndSet(ACTIVE, CUT))
+                conn.disconnect();
+        }
+
+        private synchronized void checkIn(long nanos) {
+            if (state.get() == ACTIVE)
+                scheduled = timer.schedule(this::check, nanos, TimeUnit.NANOSECONDS);
         }
 
         boolean passed() {
-            return passed;
+            return state.get() == CUT;
         }
 
         void done() {
-            if (cut != null)
-                cut.cancel(false);
+            state.compareAndSet(ACTIVE, DONE);
+            synchronized (this) {
+                if (scheduled != null)
+                    scheduled.cancel(false);
+            }
         }
     }
 
-    /** How much of a body is sent between one restart of its deadline and the next */
+    /** How much of a body is sent between one sign of progress and the next */
     private static final int PIECE = 64 * 1024;
 
-    /** Sends a body, restarting the deadline with each piece the connection takes: one that
+    /** Sends a body, marking progress with each piece the connection takes: one that
      *  stops is cut at the timeout, one that is only slow, as on a mobile uplink that several
      *  blocks share, is not. A buffered body is written all at once while the response is
      *  awaited, with no progress to see, so one bigger than a piece is streamed. */
@@ -100,7 +128,7 @@ public class AndroidPoster implements HttpPoster {
         try (OutputStream out = conn.getOutputStream()) {
             for (int sent = 0; sent < body.length; sent += PIECE) {
                 out.write(body, sent, Math.min(PIECE, body.length - sent));
-                deadline.restart();
+                deadline.progress();
             }
         }
     }
@@ -174,6 +202,18 @@ public class AndroidPoster implements HttpPoster {
         }
     }
 
+    /** What a failed request reports: a timeout if its socket timed out or its deadline cut it, after which the
+     *  connection fails whatever it was doing in whatever way it does; a RuntimeException, or a failure before
+     *  there was a connection, as it is; anything else as the request reads the server's answer. */
+    private static Throwable failure(Exception e, Deadline deadline, HttpURLConnection conn, String url,
+                                     BiFunction<HttpURLConnection, IOException, Throwable> answer) {
+        if (e instanceof SocketTimeoutException || deadline != null && deadline.passed())
+            return new SocketTimeoutException("Socket timeout on: " + url);
+        if (! (e instanceof IOException) || conn == null)
+            return e;
+        return answer.apply(conn, (IOException) e);
+    }
+
     private CompletableFuture<byte[]> post(String url, byte[] payload, boolean unzip, Map<String, String> headers, int timeoutMillis) {
         return async(() -> postSync(url, payload, unzip, headers, timeoutMillis));
     }
@@ -206,25 +246,15 @@ public class AndroidPoster implements HttpPoster {
                 resp = Serialize.readFully(din);
             }
             res.complete(resp);
-        } catch (SocketTimeoutException e) {
-            res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
         } catch (IOException | RuntimeException e) {
-            // cut off at its deadline, the connection fails whatever it was doing in whatever way it does
-            if (deadline != null && deadline.passed())
-                res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
-            else if (! (e instanceof IOException))
-                res.completeExceptionally(e);
-            else if (conn != null){
-                String trailer = conn.getHeaderField("Trailer");
+            res.completeExceptionally(failure(e, deadline, conn, url, (answered, io) -> {
+                String trailer = answered.getHeaderField("Trailer");
                 if (trailer != null)
                     System.err.println("Trailer:" + trailer);
                 else
-                    System.err.println(e.getMessage() + " retrieving " + url);
-                res.completeExceptionally(trailer == null ?
-                        withStatus(conn, url, (IOException) e) :
-                        new RuntimeException(trailer));
-            } else
-                res.completeExceptionally(e);
+                    System.err.println(io.getMessage() + " retrieving " + url);
+                return trailer == null ? withStatus(answered, url, io) : new RuntimeException(trailer);
+            }));
         } finally {
             finish(deadline, conn);
         }
@@ -283,20 +313,16 @@ public class AndroidPoster implements HttpPoster {
                 return Futures.of(Serialize.readFully(in));
             }
         } catch (IOException | RuntimeException e) {
-            CompletableFuture<byte[]> res = new CompletableFuture<>();
-            if (e instanceof SocketTimeoutException || (deadline != null && deadline.passed()))
-                res.completeExceptionally(new SocketTimeoutException("Socket timeout on: " + url));
-            else if (! (e instanceof IOException))
-                res.completeExceptionally(e);
-            else if (conn != null) {
-                try (InputStream err = conn.getErrorStream()) {
-                    res.completeExceptionally(new IOException("HTTP " + conn.getResponseCode() + ": " + conn.getResponseMessage()));
+            return Futures.errored(failure(e, deadline, conn, url, (answered, io) -> {
+                IOException status = null;
+                try (InputStream err = answered.getErrorStream()) {
+                    status = new IOException("HTTP " + answered.getResponseCode() + ": " + answered.getResponseMessage());
                 } catch (IOException f) {
-                    res.completeExceptionally(f);
+                    if (status == null) // not when only closing the error stream failed
+                        return f;
                 }
-            } else
-                res.completeExceptionally(e);
-            return res;
+                return status;
+            }));
         } finally {
             finish(deadline, conn);
         }
@@ -342,19 +368,18 @@ public class AndroidPoster implements HttpPoster {
                 try (DataInputStream din = new DataInputStream(isGzipped ? new GZIPInputStream(conn.getInputStream()) : conn.getInputStream())) {
                     return Serialize.readFully(din);
                 }
-            } catch (SocketTimeoutException e) {
-                throw new RuntimeException("Timeout retrieving: " + url, e);
             } catch (IOException | RuntimeException e) {
-                if (deadline != null && deadline.passed())
-                    throw new RuntimeException("Timeout retrieving: " + url, new SocketTimeoutException("Socket timeout on: " + url));
-                if (! (e instanceof IOException))
-                    throw (RuntimeException) e;
-                String trailer = conn.getHeaderField("Trailer");
-                if (trailer != null)
-                    try {
-                        throw new IllegalStateException(URLDecoder.decode(trailer, "UTF-8"));
-                    } catch (UnsupportedEncodingException f) {}
-                throw new RuntimeException(withStatus(conn, url, (IOException) e));
+                Throwable failure = failure(e, deadline, conn, url, (answered, io) -> {
+                    String trailer = answered.getHeaderField("Trailer");
+                    if (trailer != null)
+                        try {
+                            return new IllegalStateException(URLDecoder.decode(trailer, "UTF-8"));
+                        } catch (UnsupportedEncodingException f) {}
+                    return new RuntimeException(withStatus(answered, url, io));
+                });
+                if (failure instanceof SocketTimeoutException) // with the socket's own as the cause, if it was that
+                    throw new RuntimeException("Timeout retrieving: " + url, e instanceof SocketTimeoutException ? e : failure);
+                throw failure instanceof RuntimeException ? (RuntimeException) failure : new RuntimeException(failure);
             } finally {
                 finish(deadline, conn);
             }
