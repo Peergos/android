@@ -1,5 +1,6 @@
 package peergos.android;
 
+import android.content.ClipDescription;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.AssetFileDescriptor;
@@ -9,6 +10,7 @@ import android.graphics.Bitmap;
 import android.graphics.Point;
 import android.media.MediaMetadataRetriever;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -131,6 +133,26 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
         row.add(Root.COLUMN_FLAGS, Root.FLAG_LOCAL_ONLY | Root.FLAG_SUPPORTS_CREATE);
         row.add(Root.COLUMN_ICON, R.mipmap.ic_launcher_round);
         return cursor;
+    }
+
+    /** Asked on the caller's thread, often an app's UI thread as it starts an activity for a document, which a wait
+     *  for the sign-in at start would hold past its input timeout: before a session there is no type to give. */
+    @Override
+    public String getDocumentType(String documentId) throws FileNotFoundException {
+        if (PeergosSession.context().isEmpty())
+            return null;
+        return super.getDocumentType(documentId);
+    }
+
+    /** Where an open for a type (ImageDecoder asks for image/*) comes when getType gave none, as before the sign-in at
+     *  start: the type is looked up again, which waits for the sign-in as an open does. */
+    @Override
+    public AssetFileDescriptor openTypedDocument(String documentId, String mimeTypeFilter, Bundle opts,
+                                                 CancellationSignal signal) throws FileNotFoundException {
+        String type = super.getDocumentType(documentId);
+        if (type == null || ! ClipDescription.compareMimeTypes(type, mimeTypeFilter))
+            throw new FileNotFoundException("The requested MIME type is not supported.");
+        return new AssetFileDescriptor(openDocument(documentId, "r", signal), 0, AssetFileDescriptor.UNKNOWN_LENGTH);
     }
 
     @Override
@@ -941,7 +963,13 @@ public class PeergosDocumentsProvider extends DocumentsProvider {
     }
 
     private Session sessionOrThrow() throws FileNotFoundException {
-        Optional<UserContext> ctx = PeergosSession.context();
+        Optional<UserContext> ctx;
+        try {
+            ctx = PeergosSession.awaitContext(PeergosSession.SIGN_IN_WAIT_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new FileNotFoundException("Interrupted waiting for Peergos to sign in");
+        }
         Optional<NetworkAccess> net = PeergosSession.network();
         Optional<Crypto> crypto = PeergosSession.crypto();
         if (ctx.isEmpty() || net.isEmpty() || crypto.isEmpty())

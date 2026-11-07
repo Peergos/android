@@ -17,11 +17,14 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -55,6 +58,10 @@ public class AndroidPartialCopyTest {
     private Path otherRoot;
 
     private void reset(boolean moveSupported) throws IOException {
+        reset(moveSupported, null);
+    }
+
+    private void reset(boolean moveSupported, String providerLocale) throws IOException {
         Uri authorityUri = Uri.parse("content://" + TestDocumentsProvider.AUTHORITY);
         Bundle seed = new Bundle();
         seed.putInt("count", 0);
@@ -62,6 +69,7 @@ public class AndroidPartialCopyTest {
         seed.putLong("minSize", 0);
         seed.putLong("maxSize", 0);
         seed.putBoolean("moveSupported", moveSupported);
+        seed.putString("locale", providerLocale);
         ctx.getContentResolver().call(authorityUri, TestDocumentsProvider.METHOD_RESET_AND_SEED, null, seed);
         Uri treeUri = DocumentsContract.buildTreeDocumentUri(TestDocumentsProvider.AUTHORITY, TestDocumentsProvider.ROOT_ID);
         device = new AndroidSyncFileSystem(treeUri, ctx, crypto);
@@ -175,6 +183,131 @@ public class AndroidPartialCopyTest {
             Assert.assertEquals("move " + moveSupported, expected, tree(other));
             Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
         }
+    }
+
+    @Test
+    public void aFileTheProviderWouldNameAfterItsContent() throws Exception {
+        for (boolean moveSupported : List.of(true, false)) {
+            reset(moveSupported);
+            SyncState state = new JdbcTreeState(":memory:");
+            // a zip inside, under an extension in capitals: read by its first bytes it is a zip, and a provider adds
+            // .zip to a name asked for as one that does not end in it
+            byte[] data = ("PK\u0003\u0004" + new String(randomText(4096, 3))).getBytes();
+            Files.write(otherRoot.resolve("Report.DOCX"), data);
+            sync(state);
+            Map<String, String> expected = Map.of("Report.DOCX", new String(data));
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            sync(state);
+            Assert.assertEquals("move " + moveSupported, expected, tree(device));
+            Assert.assertEquals("move " + moveSupported, expected, tree(other));
+            Assert.assertFalse(device.exists(Paths.get(LocalFileSystem.PARTIAL_COPIES_DIR)));
+        }
+    }
+
+    /** The platform's providers lower-case an extension in their own locale to find its type, and in Turkish the I of
+     *  a capital one becomes a dotless i: .HEIC and .GIF are then of no type, and would get .heic and .gif added */
+    @Test
+    public void aCapitalExtensionInTurkish() throws Exception {
+        reset(true, "tr");
+        try {
+            SyncState state = new JdbcTreeState(":memory:");
+            Files.write(otherRoot.resolve("IMG_0001.HEIC"), "photo".getBytes());
+            Files.write(otherRoot.resolve("clip.GIF"), "animation".getBytes());
+            Map<String, String> expected = Map.of("IMG_0001.HEIC", "photo", "clip.GIF", "animation");
+            sync(state);
+            Assert.assertEquals(expected, tree(device));
+            sync(state);
+            Assert.assertEquals(expected, tree(device));
+            Assert.assertEquals(expected, tree(other));
+        } finally {
+            reset(true);
+        }
+    }
+
+    /** A name the storage cannot hold is skipped and reported, and the rest of the folder still syncs. The copy
+     *  given up on is not resumed at the start of the next pass, which would fail it: the file is skipped again. */
+    @Test
+    public void aNameTheStorageCannotHoldIsSkipped() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.write(otherRoot.resolve("a:b.txt"), "colon".getBytes());
+        Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
+        for (int pass = 0; pass < 2; pass++) {
+            List<String> log = Collections.synchronizedList(new ArrayList<>());
+            DirectorySync.syncDir(device, other, true, true, null, null, state, 32, 5,
+                    Files.createTempDirectory(ctx.getCacheDir().toPath(), "sync-state"), crypto, () -> false, log::add);
+            Map<String, String> onDevice = tree(device);
+            Assert.assertEquals("pass " + pass + ": " + log, "after it", onDevice.get("c.txt"));
+            Assert.assertFalse(onDevice.containsKey("a_b.txt"));
+            Assert.assertFalse(onDevice.containsKey("a:b.txt"));
+            Assert.assertTrue("pass " + pass + ": " + log, log.stream().anyMatch(line -> line.contains("skipped")
+                    && line.contains("its storage named it a_b.txt")));
+        }
+    }
+
+    /** The sync has no skip for a folder, so the pass fails, but the files in it are skipped, the rest still syncs,
+     *  and no folder is left under the name the storage chose. */
+    @Test
+    public void aFolderTheStorageCannotHoldLeavesNothingBehind() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.createDirectories(otherRoot.resolve("n:1"));
+        Files.write(otherRoot.resolve("n:1/x.txt"), "inside".getBytes());
+        Files.write(otherRoot.resolve("c.txt"), "after it".getBytes());
+        for (int pass = 0; pass < 2; pass++) {
+            try {
+                sync(state);
+                Assert.fail("A folder the storage cannot hold was synced");
+            } catch (Exception expected) {}
+        }
+        Map<String, String> onDevice = tree(device);
+        Assert.assertEquals(onDevice.toString(), Map.of("c.txt", "after it"), onDevice);
+    }
+
+    /** The sync looks for a moved file under the name it was moved to, so one the storage can't hold is left as it was */
+    @Test
+    public void aRenameTheStorageCannotHoldLeavesTheFileAsItWas() throws Exception {
+        reset(true);
+        SyncState state = new JdbcTreeState(":memory:");
+        Files.write(otherRoot.resolve("a.txt"), "renamed".getBytes());
+        sync(state);
+        Assert.assertEquals(Map.of("a.txt", "renamed"), tree(device));
+
+        Files.move(otherRoot.resolve("a.txt"), otherRoot.resolve("a:x.txt"));
+        try {
+            sync(state);
+            Assert.fail("A rename the storage cannot hold was synced");
+        } catch (Exception expected) {}
+        Assert.assertEquals(Map.of("a.txt", "renamed"), tree(device));
+    }
+
+    /** A new file is made before anything is read for it, so one whose read fails is removed again: left under its
+     *  name, the next pass would take it for a file of its own */
+    @Test
+    public void aNewFileWhoseReadFailsIsNotLeft() throws Exception {
+        reset(true);
+        AsyncReader failing = new AsyncReader() {
+            @Override
+            public CompletableFuture<Integer> readIntoArray(byte[] res, int offset, int length) {
+                CompletableFuture<Integer> failed = new CompletableFuture<>();
+                failed.completeExceptionally(new IOException("Gone"));
+                return failed;
+            }
+
+            @Override
+            public CompletableFuture<AsyncReader> reset() {
+                return CompletableFuture.completedFuture(this);
+            }
+
+            @Override
+            public void close() {}
+        };
+        try {
+            device.setBytes(Paths.get("f.txt"), 0, failing, 10, Optional.empty(), Optional.empty(), Optional.empty(),
+                    ResumeUploadProps.random(crypto), () -> false, x -> {});
+            Assert.fail("Nothing could be read");
+        } catch (Exception expected) {}
+        Assert.assertEquals(Map.of(), tree(device));
     }
 
     @Test
