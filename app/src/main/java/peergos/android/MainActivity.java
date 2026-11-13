@@ -189,6 +189,16 @@ public class MainActivity extends AppCompatActivity {
     /** Set once the page has drawn something, or could not: the splash comes down then. */
     private volatile boolean firstPageShown = false;
     public static final long MAX_BLOCK_CACHE_SIZE = 500 * 1024 * 1024L;
+    private static FileBlockCache blockCache;
+
+    /** One per process, for the local server and every sync pass: each instance keeps its own count of the cache's
+     *  size and evicts by it, so a second one over the same directory deletes again what the first already did. */
+    public static synchronized FileBlockCache blockCache(Path peergosDir) {
+        if (blockCache == null)
+            blockCache = new FileBlockCache(peergosDir.resolve(Paths.get("blocks", "cache")), MAX_BLOCK_CACHE_SIZE);
+        return blockCache;
+    }
+
     public static final String SYNC_CHANNEL_ID = "sync-progress";
     public static final int SYNC_NOTIFICATION_ID = 77;
     public static final int SYNC_NOTIFICATION_ERROR_ID = 78;
@@ -1681,8 +1691,7 @@ public class MainActivity extends AppCompatActivity {
             BatCave batCave = new HttpBatCave(poster, poster);
             HttpInstanceAdmin admin = new LocalVersionInstanceAdmin(poster);
 
-            FileBlockCache blockCache = new FileBlockCache(a.getPeergosDir().resolve(Paths.get("blocks", "cache")),
-                    MAX_BLOCK_CACHE_SIZE);
+            FileBlockCache blockCache = blockCache(a.getPeergosDir());
             ContentAddressedStorage locallyCachedStorage = new UnauthedCachingStorage(s3, blockCache, crypto.hasher);
             DirectOnlyStorage withoutS3 = new DirectOnlyStorage(locallyCachedStorage);
 
