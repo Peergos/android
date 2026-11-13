@@ -80,7 +80,7 @@ public class PeergosApp extends Application {
         String serverUrlStr = readSavedServerUrl(peergosDir).orElse("https://peergos.net");
         URL serverUrl = new URL(serverUrlStr);
 
-        Supplier<Crypto> cryptoFactory = () -> Main.initCrypto(new ScryptAndroid());
+        Supplier<Crypto> cryptoFactory = () -> Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         Supplier<NetworkAccess> networkFactory = () -> {
             HttpPoster poster = new AndroidPoster(serverUrl, true, Optional.empty(),
                     Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android-mount"));

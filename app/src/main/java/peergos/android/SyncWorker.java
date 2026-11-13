@@ -144,7 +144,7 @@ public class SyncWorker extends Worker {
             SyncConfig syncConfig = null;
             try {
                 System.out.println("SYNC: starting work");
-                Crypto crypto = Main.initCrypto(new ScryptAndroid());
+                Crypto crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
                 Path oldConfigFile = peergosDir.resolve(SyncConfigHandler.OLD_SYNC_CONFIG_FILENAME);
                 Path jsonSyncConfig = peergosDir.resolve(SyncConfigHandler.SYNC_CONFIG_FILENAME);
 
