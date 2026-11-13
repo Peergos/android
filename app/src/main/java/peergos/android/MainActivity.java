@@ -564,7 +564,7 @@ public class MainActivity extends AppCompatActivity {
             gotPermissions.complete(true);
         });
 
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         try {
             poster = new AndroidPoster(new URL("http://localhost:" + PORT), false, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));

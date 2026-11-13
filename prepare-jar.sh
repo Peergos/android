@@ -26,6 +26,8 @@ zip -d "$JAR" \
     'META-INF/kotlinx*' \
     'META-INF/versions/9*' \
     'org/slf4j/*' \
+    'org/bouncycastle/*' \
+    'META-INF/versions/*/org/bouncycastle/*' \
     'org/sqlite/native/Mac/*' \
     'org/sqlite/native/Windows/*' \
     'org/sqlite/native/OpenBSD/*' \
