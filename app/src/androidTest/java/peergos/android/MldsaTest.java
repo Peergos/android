@@ -15,6 +15,7 @@ import peergos.server.Main;
 import peergos.shared.Crypto;
 import peergos.shared.crypto.SigningKeyPair;
 import peergos.shared.crypto.asymmetric.PublicSigningKey;
+import peergos.shared.crypto.asymmetric.SigningDomain;
 import peergos.shared.crypto.asymmetric.mldsa.Mldsa;
 import peergos.shared.util.ArrayOps;
 
@@ -40,11 +41,11 @@ public class MldsaTest {
         SigningKeyPair pair = SigningKeyPair.randomHybrid(crypto.random, crypto.signer, crypto.mldsa);
         Assert.assertEquals(PublicSigningKey.Type.HybridEd25519MLDSA, pair.publicSigningKey.type());
         byte[] message = "hello".getBytes();
-        byte[] signed = pair.secretSigningKey.signMessage(message).join();
-        Assert.assertArrayEquals(message, pair.publicSigningKey.unsignMessage(signed).join());
+        byte[] signed = pair.secretSigningKey.signMessage(message, SigningDomain.POINTER).join();
+        Assert.assertArrayEquals(message, pair.publicSigningKey.unsignMessage(signed, SigningDomain.POINTER).join());
         signed[100] ^= 1;
         try {
-            pair.publicSigningKey.unsignMessage(signed).join();
+            pair.publicSigningKey.unsignMessage(signed, SigningDomain.POINTER).join();
             Assert.fail("Tampered signature accepted");
         } catch (Throwable expected) {}
     }
