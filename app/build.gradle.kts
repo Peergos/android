@@ -56,7 +56,8 @@ android {
                 "META-INF/LICENSE*",
                 "META-INF/DEPENDENCIES",
                 "META-INF/INDEX.LIST",
-                "META-INF/MANIFEST.MF"
+                "META-INF/MANIFEST.MF",
+                "META-INF/versions/*/OSGI-INF/MANIFEST.MF"
             )
         }
     }
@@ -80,6 +81,8 @@ dependencies {
     implementation(files("libs/Peergos.jar"))
     implementation(files("libs/http-2.2.1.jar"))
     implementation(files("libs/sun-common-server.jar"))
+    // ML-DSA for writer keys, which Android's providers lack. prepare-jar.sh strips the older copy in Peergos.jar
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
     implementation(libs.exifinterface)
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")
