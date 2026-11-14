@@ -58,3 +58,59 @@ target_include_directories(tweetnacl PRIVATE
 )
 
 target_link_libraries(tweetnacl log)
+
+# sqlite-jdbc's native library, built as its Makefile does: sqlite3.c with its extension functions
+# appended and registered on open, and the JDBC_EXTENSIONS compile option added.
+set(SQLITE_JDBC ${CMAKE_CURRENT_SOURCE_DIR}/sqlite-jdbc)
+set(SQLITE_JDBC_OUT ${CMAKE_CURRENT_BINARY_DIR}/sqlite-jdbc)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${SQLITE_JDBC}/sqlite3.c ${SQLITE_JDBC}/sqlite3ext.h ${SQLITE_JDBC}/extension-functions.c)
+file(READ ${SQLITE_JDBC}/sqlite3.c SQLITE_C)
+string(REPLACE "\nopendb_out:"
+        "\n  if(!db->mallocFailed && rc==SQLITE_OK){ int RegisterExtensionFunctions(sqlite3 *); rc = RegisterExtensionFunctions(db); }\nopendb_out:"
+        SQLITE_C "${SQLITE_C}")
+string(REPLACE "static const char * const sqlite3azCompileOpt[] = {\n"
+        "static const char * const sqlite3azCompileOpt[] = {\n\n/* This has been automatically added by sqlite-jdbc */\n  \"JDBC_EXTENSIONS\",\n"
+        SQLITE_C "${SQLITE_C}")
+file(READ ${SQLITE_JDBC}/extension-functions.c SQLITE_EXT_C)
+file(WRITE ${SQLITE_JDBC_OUT}/sqlite3.c "${SQLITE_C}${SQLITE_EXT_C}")
+file(READ ${SQLITE_JDBC}/sqlite3ext.h SQLITE_EXT_H)
+string(REPLACE "sqlite3_api;" "sqlite3_api = 0;" SQLITE_EXT_H "${SQLITE_EXT_H}")
+file(WRITE ${SQLITE_JDBC_OUT}/sqlite3ext.h "${SQLITE_EXT_H}")
+
+add_library(sqlitejdbc SHARED
+        ${SQLITE_JDBC_OUT}/sqlite3.c
+        ${SQLITE_JDBC}/NativeDB.c
+)
+
+target_include_directories(sqlitejdbc PRIVATE ${SQLITE_JDBC_OUT} ${SQLITE_JDBC})
+
+target_compile_options(sqlitejdbc PRIVATE -Os -fvisibility=hidden)
+
+target_compile_definitions(sqlitejdbc PRIVATE
+        SQLITE_ENABLE_LOAD_EXTENSION=1
+        SQLITE_HAVE_ISNAN
+        HAVE_USLEEP=1
+        SQLITE_ENABLE_COLUMN_METADATA
+        SQLITE_CORE
+        SQLITE_ENABLE_FTS3
+        SQLITE_ENABLE_FTS3_PARENTHESIS
+        SQLITE_ENABLE_FTS5
+        SQLITE_ENABLE_RTREE
+        SQLITE_ENABLE_STAT4
+        SQLITE_ENABLE_DBSTAT_VTAB
+        SQLITE_ENABLE_MATH_FUNCTIONS
+        SQLITE_THREADSAFE=1
+        SQLITE_DEFAULT_MEMSTATUS=0
+        SQLITE_DEFAULT_FILE_PERMISSIONS=0666
+        SQLITE_MAX_VARIABLE_NUMBER=250000
+        SQLITE_MAX_MMAP_SIZE=1099511627776
+        SQLITE_MAX_LENGTH=2147483647
+        SQLITE_MAX_COLUMN=32767
+        SQLITE_MAX_SQL_LENGTH=1073741824
+        SQLITE_MAX_FUNCTION_ARG=127
+        SQLITE_MAX_ATTACHED=125
+        SQLITE_MAX_PAGE_COUNT=4294967294
+        SQLITE_DISABLE_PAGECACHE_OVERFLOW_STATS)
+
+target_link_libraries(sqlitejdbc android dl log m)

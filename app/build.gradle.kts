@@ -36,6 +36,9 @@ android {
             )
         }
     }
+    sourceSets {
+        getByName("main").java.srcDir("src/openjdk/java")
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -78,8 +81,6 @@ dependencies {
     implementation(libs.activity)
     implementation(libs.constraintlayout)
     implementation(files("libs/Peergos.jar"))
-    implementation(files("libs/http-2.2.1.jar"))
-    implementation(files("libs/sun-common-server.jar"))
     implementation(libs.exifinterface)
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")
@@ -163,15 +164,15 @@ fun antJdkHome(): String {
 // would reset it to the commit recorded in the index, throwing away an update that
 // hasn't been committed yet.
 fun uncheckedOutSubmodules(): List<String> =
-    capture(rootDir, "git", "submodule", "status", "--recursive", "web-ui")
+    capture(rootDir, "git", "submodule", "status", "--recursive", "web-ui", "deps")
         .lines().filter { it.startsWith("-") }
 
 val initWebUi = tasks.register("initWebUi") {
     group = "peergos"
-    description = "Check out the web-ui submodule and the peergos submodule nested inside it"
+    description = "Check out the web-ui submodule, the peergos submodule nested inside it, and deps"
     doLast {
         if (uncheckedOutSubmodules().isNotEmpty())
-            run(rootDir, emptyMap(), "git", "submodule", "update", "--init", "--recursive", "web-ui")
+            run(rootDir, emptyMap(), "git", "submodule", "update", "--init", "--recursive", "web-ui", "deps")
     }
 }
 
@@ -190,7 +191,7 @@ val updateWebUi = tasks.register("updateWebUi") {
 val buildWebUiJar = tasks.register("buildWebUiJar") {
     group = "peergos"
     description = "Run `ant dist` in web-ui to build the fat Peergos.jar"
-    dependsOn(initWebUi)
+    dependsOn(initWebUi, "restoreSubmoduleJars")
     mustRunAfter(updateWebUi)
     // a task with no declared outputs is never up to date, so this needs outputs.file too
     outputs.files(webUiJar, webUiJarStamp)
@@ -232,4 +233,116 @@ tasks.register("updatePeergosJar") {
 
 tasks.named("preBuild") {
     dependsOn(peergosJar)
+}
+
+// F-Droid deletes the jars checked in to web-ui and peergos before it builds. These are the same
+// bytes as Maven Central's, so they are put back from there, where F-Droid accepts them from.
+val mavenSubmoduleJars = mapOf(
+    "peergos/lib/asm-9.2.jar" to "org.ow2.asm:asm:9.2",
+    "peergos/lib/asm-analysis-9.2.jar" to "org.ow2.asm:asm-analysis:9.2",
+    "peergos/lib/asm-commons-9.2.jar" to "org.ow2.asm:asm-commons:9.2",
+    "peergos/lib/asm-tree-9.2.jar" to "org.ow2.asm:asm-tree:9.2",
+    "peergos/lib/asm-util-9.2.jar" to "org.ow2.asm:asm-util:9.2",
+    "peergos/lib/HikariCP-7.0.2.jar" to "com.zaxxer:HikariCP:7.0.2",
+    "peergos/lib/jackson-annotations-2.22.jar" to "com.fasterxml.jackson.core:jackson-annotations:2.22",
+    "peergos/lib/jackson-core-2.22.3.jar" to "com.fasterxml.jackson.core:jackson-core:2.22.3",
+    "peergos/lib/jackson-databind-2.22.3.jar" to "com.fasterxml.jackson.core:jackson-databind:2.22.3",
+    "peergos/lib/jackson-dataformat-cbor-2.22.3.jar" to "com.fasterxml.jackson.dataformat:jackson-dataformat-cbor:2.22.3",
+    "peergos/lib/jakarta.servlet-api-6.0.0.jar" to "jakarta.servlet:jakarta.servlet-api:6.0.0",
+    "peergos/lib/java-otp-0.4.0.jar" to "com.eatthepath:java-otp:0.4.0",
+    "peergos/lib/jetty-ee10-servlet-12.1.14.jar" to "org.eclipse.jetty.ee10:jetty-ee10-servlet:12.1.14",
+    "peergos/lib/jetty-http-12.1.14.jar" to "org.eclipse.jetty:jetty-http:12.1.14",
+    "peergos/lib/jetty-io-12.1.14.jar" to "org.eclipse.jetty:jetty-io:12.1.14",
+    "peergos/lib/jetty-security-12.1.14.jar" to "org.eclipse.jetty:jetty-security:12.1.14",
+    "peergos/lib/jetty-server-12.1.14.jar" to "org.eclipse.jetty:jetty-server:12.1.14",
+    "peergos/lib/jetty-session-12.1.14.jar" to "org.eclipse.jetty:jetty-session:12.1.14",
+    "peergos/lib/jetty-util-12.1.14.jar" to "org.eclipse.jetty:jetty-util:12.1.14",
+    "peergos/lib/jffi-1.3.13.jar" to "com.github.jnr:jffi:1.3.13",
+    "peergos/lib/jffi-1.3.13-native.jar" to "com.github.jnr:jffi:1.3.13:native",
+    "peergos/lib/jline-3.30.17.jar" to "org.jline:jline:3.30.17",
+    "peergos/lib/jnr-a64asm-1.0.0.jar" to "com.github.jnr:jnr-a64asm:1.0.0",
+    "peergos/lib/jnr-constants-0.10.4.jar" to "com.github.jnr:jnr-constants:0.10.4",
+    "peergos/lib/jnr-ffi-2.2.16.jar" to "com.github.jnr:jnr-ffi:2.2.16",
+    "peergos/lib/jnr-fuse-0.5.8.jar" to "com.github.serceman:jnr-fuse:0.5.8",
+    "peergos/lib/jnr-posix-3.1.19.jar" to "com.github.jnr:jnr-posix:3.1.19",
+    "peergos/lib/jnr-x86asm-1.0.2.jar" to "com.github.jnr:jnr-x86asm:1.0.2",
+    "peergos/lib/kerby-asn1-2.0.3.jar" to "org.apache.kerby:kerby-asn1:2.0.3",
+    "peergos/lib/postgresql-42.7.14.jar" to "org.postgresql:postgresql:42.7.14",
+    "peergos/lib/simpleclient-0.15.0.jar" to "io.prometheus:simpleclient:0.15.0",
+    "peergos/lib/simpleclient_common-0.15.0.jar" to "io.prometheus:simpleclient_common:0.15.0",
+    "peergos/lib/simpleclient_httpserver-0.15.0.jar" to "io.prometheus:simpleclient_httpserver:0.15.0",
+    "peergos/lib/slf4j-api-2.0.17.jar" to "org.slf4j:slf4j-api:2.0.17",
+    "peergos/lib/slf4j-nop-2.0.17.jar" to "org.slf4j:slf4j-nop:2.0.17",
+    "peergos/lib/webauthn4j-core-0.29.6.RELEASE.jar" to "com.webauthn4j:webauthn4j-core:0.29.6.RELEASE",
+    "peergos/lib-build/hamcrest-core-1.3.jar" to "org.hamcrest:hamcrest-core:1.3",
+    "peergos/lib-build/junit-4.11.jar" to "junit:junit:4.11",
+    // Not the same bytes: peergos' copies only add or drop native libraries, which Android
+    // gets from the app's own native build, or are a later snapshot of the ant tasks the build uses
+    "peergos/lib/sqlite-jdbc-3.46.1.0.jar" to "org.xerial:sqlite-jdbc:3.46.1.0",
+    "peergos/ant.lib/ant-contrib.jar" to "ant-contrib:ant-contrib:1.0b3",
+    // the nabu commit peergos' jar was built from, rebuilt by JitPack
+    "peergos/lib/nabu-v0.9.1-jar-with-dependencies.jar" to "com.github.peergos:nabu:f13dd3d3e0:jar-with-dependencies",
+)
+
+tasks.register("restoreSubmoduleJars") {
+    group = "peergos"
+    description = "Put back from Maven Central any web-ui jars that have been deleted"
+    dependsOn(initWebUi)
+    doLast {
+        val missing = mavenSubmoduleJars.filterKeys { !File(webUiDir, it).isFile }
+        for ((path, coordinate) in missing) {
+            val parts = coordinate.split(":")
+            val notation = mapOf("group" to parts[0], "name" to parts[1], "version" to parts[2]) +
+                (if (parts.size > 3) mapOf("classifier" to parts[3]) else emptyMap())
+            val dependency = project.dependencies.create(notation) as ExternalModuleDependency
+            dependency.isTransitive = false
+            val jar = configurations.detachedConfiguration(dependency).singleFile
+            jar.copyTo(File(webUiDir, path))
+        }
+
+        // The rest aren't on Maven Central, so they are built from their source in deps/, in a
+        // copy so the submodules stay clean
+        val depsBuild = layout.buildDirectory.dir("deps").get().asFile
+        val jdk = antJdkHome()
+        val antEnv = mapOf("JAVA_HOME" to jdk, "PATH" to "$jdk/bin:${System.getenv("PATH")}")
+        fun antBuild(name: String, target: String): File {
+            val dir = File(depsBuild, name)
+            dir.deleteRecursively()
+            rootProject.file("deps/$name").copyRecursively(dir)
+            File(dir, ".git").delete()
+            run(dir, antEnv, "ant", "-q", target)
+            return dir
+        }
+
+        val jpack = File(webUiDir, "JPack.jar")
+        if (!jpack.isFile) {
+            val compiler = File(antBuild("vue3-template-compiler-java", "dist"), "dist/vue3-template-compiler.jar")
+            val jpackSrc = File(depsBuild, "jpack")
+            jpackSrc.deleteRecursively()
+            rootProject.file("deps/jpack").copyRecursively(jpackSrc)
+            File(jpackSrc, "lib").listFiles()!!.forEach { it.delete() }
+            compiler.copyTo(File(jpackSrc, "lib/vue3-template-compiler.jar"))
+            run(jpackSrc, antEnv, "ant", "-q", "dist")
+            File(jpackSrc, "dist/JPack.jar").copyTo(jpack)
+        }
+
+        // peergos only compiles against it; Android never loads the desktop thumbnailer
+        val thumbnailer = File(webUiDir, "peergos/lib/thumbnailer.jar")
+        if (!thumbnailer.isFile)
+            File(antBuild("thumbnailer", "jar"), "thumbnailer.jar").copyTo(thumbnailer)
+
+        val watchTask = File(webUiDir, "lib/watch-task-1.0.jar")
+        if (!watchTask.isFile) {
+            val antJar = configurations.detachedConfiguration(
+                project.dependencies.create("org.apache.ant:ant:1.10.15") as ExternalModuleDependency
+            ).apply { isTransitive = false }.singleFile
+            val classes = File(depsBuild, "watch-task/classes").apply { deleteRecursively(); mkdirs() }
+            val compiled = javax.tools.ToolProvider.getSystemJavaCompiler().run(null, null, null,
+                "-cp", antJar.absolutePath, "--release", "11", "-d", classes.absolutePath,
+                rootProject.file("deps/watch-task/WatchTask.java").absolutePath)
+            if (compiled != 0)
+                throw GradleException("Couldn't compile the watch task stub")
+            ant.withGroovyBuilder { "jar"("destfile" to watchTask, "basedir" to classes) }
+        }
+    }
 }
