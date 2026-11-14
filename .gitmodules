@@ -1,3 +1,13 @@
 [submodule "web-ui"]
 	path = web-ui
 	url = https://github.com/peergos/web-ui
+[submodule "deps/vue3-template-compiler-java"]
+	path = deps/vue3-template-compiler-java
+	url = https://github.com/Peergos/vue3-template-compiler-java
+[submodule "deps/jpack"]
+	path = deps/jpack
+	url = https://github.com/ianopolous/jpack
+	branch = upgrade/vue3
+[submodule "deps/thumbnailer"]
+	path = deps/thumbnailer
+	url = https://github.com/Peergos/thumbnailer

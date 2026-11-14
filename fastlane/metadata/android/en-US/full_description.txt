@@ -1,0 +1,21 @@
+Peergos is a private, decentralized, end-to-end encrypted protocol for storing, sharing and publishing files, and for communicating with your friends. Everything is encrypted on your device, and the server holding your data cannot see its content, its size or who you share it with.
+
+<b>Features</b>
+<ul>
+<li>Encrypted file storage, with fine-grained sharing to friends or via secret links</li>
+<li>Two-way sync between folders on your phone and Peergos</li>
+<li>Access your Peergos files from other apps through Android's Files app</li>
+<li>Share files into Peergos from any app</li>
+<li>Calendar and contacts sync with your phone's own apps</li>
+<li>Private social feed, where you control exactly who sees each post</li>
+<li>Encrypted chat, email, photo gallery, music and video player, PDF viewer, markdown editor and more</li>
+<li>Run sandboxed apps that can only see the files you grant them</li>
+<li>Quantum-resistant end-to-end encryption</li>
+</ul>
+
+<b>Open and independent</b>
+Peergos is free and open source, and you can run your own server. 
+
+Peergos needs an account on a Peergos server. You can sign up at https://peergos.net or run your own (https://book.peergos.org/features/self.html).
+
+The name comes from the Greek word Πύργος (Pyrgos), meaning stronghold or tower. Pronunciation: peer-goss (as in gossip).

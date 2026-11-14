@@ -1,0 +1,6 @@
+• Folder sync: handles case-only renames, names the device storage can't hold, and failed writes without leaving partial files
+• Mounted files: correct open modes, appends and fsync, which now reports a failed upload
+• Calendar: all reminders, cleared fields and recurring event durations sync both ways
+• Contacts: fields only on the phone are kept
+• Sharing into Peergos and the keyboard in dialogs work better
+• Faster startup and more reliable network timeouts
