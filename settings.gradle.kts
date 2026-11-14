@@ -16,6 +16,12 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven("https://jitpack.io") {
+            content {
+                includeGroup("com.github.peergos")
+                includeGroup("com.github.Peergos.gwt")
+            }
+        }
     }
 }
 
