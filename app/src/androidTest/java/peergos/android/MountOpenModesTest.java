@@ -57,7 +57,7 @@ public class MountOpenModesTest {
         int port = Integer.parseInt(args.getString("peergosPort", "8000"));
         URL serverUrl = new URL("http://" + host + ":" + port);
 
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
         HttpPoster poster = new AndroidPoster(serverUrl, false,
                 Optional.empty(), Optional.of("peergos-android-test"));

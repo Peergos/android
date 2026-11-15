@@ -60,6 +60,7 @@ android {
                 "META-INF/DEPENDENCIES",
                 "META-INF/INDEX.LIST",
                 "META-INF/MANIFEST.MF",
+                "META-INF/versions/*/OSGI-INF/MANIFEST.MF",
                 // Peergos.jar's desktop tweetnacl builds; Android loads the app's own
                 "native-lib/**"
             )
@@ -83,6 +84,8 @@ dependencies {
     implementation(libs.activity)
     implementation(libs.constraintlayout)
     implementation(files("libs/Peergos.jar"))
+    // ML-DSA for writer keys, which Android's providers lack. prepare-jar.sh strips the older copy in Peergos.jar
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
     implementation(libs.exifinterface)
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")

@@ -49,7 +49,7 @@ public class AndroidRenameTest {
     @Before
     public void setUp() throws IOException {
         ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         Bundle seed = new Bundle();
         seed.putInt("count", 0);
         ctx.getContentResolver().call(Uri.parse("content://" + TestDocumentsProvider.AUTHORITY),
