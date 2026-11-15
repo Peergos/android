@@ -41,7 +41,7 @@ public class AndroidTruncateTest {
     @Before
     public void setUp() {
         ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
 
         // Wipe the provider's root (count=0 seeds nothing).
         Uri authorityUri = Uri.parse("content://" + TestDocumentsProvider.AUTHORITY);

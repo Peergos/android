@@ -44,7 +44,7 @@ public class MountColdStartTest {
         Bundle args = InstrumentationRegistry.getArguments();
         String host = args.getString("peergosHost", "10.0.2.2");
         int port = Integer.parseInt(args.getString("peergosPort", "8000"));
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         HttpPoster poster = new AndroidPoster(new URL("http://" + host + ":" + port), false,
                 Optional.empty(), Optional.of("peergos-android-test"));
         ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, crypto.hasher);

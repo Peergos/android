@@ -42,6 +42,7 @@ import java.util.stream.Collectors;
 import peergos.android.AndroidPoster;
 import peergos.android.PeergosSession;
 import peergos.android.ScryptAndroid;
+import peergos.android.BcMldsa;
 import peergos.android.sync.PeergosAccount;
 import peergos.server.Main;
 import peergos.server.webdav.caldav.AppDataStore;
@@ -100,7 +101,7 @@ public class CalendarFieldsEndToEndTest {
     @BeforeClass
     public static void signUp() throws Exception {
         context = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        Crypto crypto = Main.initCrypto(new ScryptAndroid());
+        Crypto crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         android.os.Bundle args = InstrumentationRegistry.getArguments();
         String host = args.getString("peergosHost", "localhost");
         int port = Integer.parseInt(args.getString("peergosPort", "7777"));

@@ -80,7 +80,7 @@ public class AndroidPartialCopyTest {
     @Before
     public void setUp() {
         ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        crypto = Main.initCrypto(new ScryptAndroid());
+        crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
     }
 
     private void sync(SyncState state) throws Exception {
