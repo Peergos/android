@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">localhost</domain>
-    </domain-config>
+    <!-- A server url may only be saved as plain http for a server on this device, the local network
+         or a private VPN (ConfigHandler.validateServerUrl). The platform cannot name address ranges,
+         so it permits cleartext and leaves where http may go to that check. -->
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>

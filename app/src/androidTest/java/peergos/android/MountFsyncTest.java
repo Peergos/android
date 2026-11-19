@@ -81,7 +81,6 @@ public class MountFsyncTest {
             }, "black-hole");
             accept.setDaemon(true);
             accept.start();
-            // by name: the app allows cleartext to localhost alone
             blackHole = new AndroidPoster(new URL("http://localhost:" + sink.getLocalPort() + "/"), false);
         }
 
