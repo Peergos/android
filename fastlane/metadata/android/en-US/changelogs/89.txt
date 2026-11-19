@@ -1,0 +1,6 @@
+• Folder sync: much faster with very large files, which it no longer downloads to compare, and it now always stays inside the sync folder
+• Better security key (WebAuthn) handling
+• The Markdown viewer shows the latest version of a page
+• Groundwork for post-quantum (ML-DSA) signing keys, not yet switched on
+• Updated GWT and stricter checks when reading data
+• Reproducible build, ready for F-Droid
