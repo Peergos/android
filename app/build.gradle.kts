@@ -24,6 +24,11 @@ android {
         }
     }
 
+    // F-Droid rejects the APK signing block AGP adds, which only Google can decrypt
+    dependenciesInfo {
+        includeInApk = false
+    }
+
     buildTypes {
         release {
             // R8 renames and drops what it can, which is also what Play measures as
