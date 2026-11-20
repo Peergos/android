@@ -781,6 +781,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void downloadFile(Uri uri) {
+        // only what our own server reflects: the download manager would fetch any other host, in cleartext too
+        if (! isOurs(uri))
+            return;
         new Thread(() -> {
             System.out.println("onDownloadStart");
             String path = uri.getEncodedPath();

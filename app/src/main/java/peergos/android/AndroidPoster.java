@@ -27,6 +27,7 @@ import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import java.util.zip.GZIPInputStream;
 
+import peergos.server.Main;
 import peergos.shared.user.HttpPoster;
 import peergos.shared.util.Serialize;
 
@@ -165,11 +166,32 @@ public class AndroidPoster implements HttpPoster {
     }
 
     public URL buildURL(String method) throws IOException {
+        URL url;
         try {
-            return new URL(dht, method);
+            url = new URL(dht, method);
         } catch (MalformedURLException mexican) {
             throw new IOException(mexican);
         }
+        // The platform can't name address ranges, so it permits cleartext and this keeps plain http to a server on
+        // this device, the local network or a VPN, by the rule a server url is saved by. Nothing is looked up.
+        if ("http".equalsIgnoreCase(url.getProtocol()) && ! Main.allowsPlainHttp(url.getHost()))
+            throw new IOException("Plain http is only for a server on this device, the local network or a VPN, by its IP address or VPN name: use that, or https, for " + url.getHost());
+        return url;
+    }
+
+    private HttpURLConnection open(String url) throws IOException {
+        URL target = buildURL(url);
+        HttpURLConnection conn = (HttpURLConnection) target.openConnection();
+        // a redirect would take plain http past that check
+        if ("http".equalsIgnoreCase(target.getProtocol()))
+            conn.setInstanceFollowRedirects(false);
+        return conn;
+    }
+
+    /** A redirect left unfollowed is a failure, not an empty answer. */
+    private static void refuseRedirect(HttpURLConnection conn) throws IOException {
+        if (conn.getResponseCode() / 100 == 3)
+            throw new IOException("Redirect not followed");
     }
 
     @Override
@@ -224,7 +246,7 @@ public class AndroidPoster implements HttpPoster {
         CompletableFuture<byte[]> res = new CompletableFuture<>();
         try
         {
-            conn = (HttpURLConnection) buildURL(url).openConnection();
+            conn = open(url);
             if (timeoutMillis >= 0)
                 conn.setReadTimeout(timeoutMillis);
             conn.setConnectTimeout(1_000);
@@ -237,6 +259,7 @@ public class AndroidPoster implements HttpPoster {
             if (basicAuth.isPresent())
                 conn.setRequestProperty("Authorization", basicAuth.get());
             send(conn, payload, deadline);
+            refuseRedirect(conn);
 
             String contentEncoding = conn.getContentEncoding();
             deadline.done(); // the headers are in: the body is read under the read timeout
@@ -293,7 +316,7 @@ public class AndroidPoster implements HttpPoster {
         HttpURLConnection conn = null;
         Deadline deadline = null;
         try {
-            conn = (HttpURLConnection) buildURL(url).openConnection();
+            conn = open(url);
             conn.setRequestMethod("PUT");
             conn.setConnectTimeout(10_000);
             if (timeoutMillis >= 0)
@@ -306,6 +329,7 @@ public class AndroidPoster implements HttpPoster {
                 conn.setRequestProperty("Authorization", basicAuth.get());
             conn.setDoOutput(true);
             send(conn, body, deadline);
+            refuseRedirect(conn);
 
             InputStream in = conn.getInputStream();
             deadline.done(); // the headers are in: the body is read under the read timeout
@@ -350,7 +374,7 @@ public class AndroidPoster implements HttpPoster {
             HttpURLConnection conn = null;
             Deadline deadline = null;
             try {
-                conn = (HttpURLConnection) buildURL(url).openConnection();
+                conn = open(url);
                 conn.setConnectTimeout(10_000);
                 conn.setReadTimeout(15000);
                 // up to the response headers, as JavaPoster bounds a get
@@ -361,6 +385,7 @@ public class AndroidPoster implements HttpPoster {
                 }
                 if (basicAuth.isPresent())
                     conn.setRequestProperty("Authorization", basicAuth.get());
+                refuseRedirect(conn);
 
                 String contentEncoding = conn.getContentEncoding();
                 deadline.done(); // the headers are in: the body is read under the read timeout
