@@ -1769,10 +1769,7 @@ public class MainActivity extends AppCompatActivity {
                 return null;
 
             // now start the server
-            // Plain http is only ever saved for a server on this device, the local network or a VPN, which is
-            // usually a private one and only accepts POSTs. Told from the url, as a DNS lookup here would hold
-            // up the first page.
-            HttpPoster poster = new AndroidPoster(target, ! "http".equalsIgnoreCase(target.getProtocol()), Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
+            HttpPoster poster = new AndroidPoster(target, AndroidPoster.isPublicServer(target), Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ContentAddressedStorage remote = NetworkAccess.buildLocalDht(poster, true, hasher);
             // Its ids and block store properties come from disk after the first run: nothing
             // waits on the server before the page can load, and the page still loads, and a

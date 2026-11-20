@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -118,6 +119,17 @@ public class AndroidPosterPlainHttpTest {
         for (String base : new String[]{"http://192.168.1.10:8000/", "http://100.64.0.10:8000/",
                 "http://[fd7a:115c:a1e0::1]:8000/", "http://machine.tailnet.ts.net:8000/", "http://peer.netbird.cloud:8000/"})
             assertEquals(base + "api/v0/ids", new AndroidPoster(url(base), false).buildURL("api/v0/ids").toString());
+    }
+
+    /** A server on this device, the local network or a VPN is usually a private one, which answers a GET with a 405,
+     *  over https as much as over http. */
+    @Test
+    public void aServerOnTheLocalNetworkOrAVpnIsNotTakenForAPublicOne() {
+        for (String base : new String[]{"http://localhost:8000/", "http://192.168.1.10:8000/", "https://192.168.1.10:8443/",
+                "https://100.64.0.10/", "https://[fd7a:115c:a1e0::1]/", "https://machine.tailnet.ts.net/"})
+            assertFalse(base, AndroidPoster.isPublicServer(url(base)));
+        for (String base : new String[]{"https://peergos.net/", "https://8.8.8.8/", "https://example.com/"})
+            assertTrue(base, AndroidPoster.isPublicServer(url(base)));
     }
 
     private static URL url(String s) {

@@ -165,6 +165,13 @@ public class AndroidPoster implements HttpPoster {
         this(dht, isPublicServer, Optional.empty(), Optional.empty());
     }
 
+    /** Whether a server may be sent GETs. One on this device, the local network or a VPN is usually a private one,
+     *  which only accepts POSTs, over https too. This uses the same rule as the plain http check, which looks nothing
+     *  up, so it doesn't hold up the first page. */
+    static boolean isPublicServer(URL server) {
+        return ! Main.allowsPlainHttp(server.getHost());
+    }
+
     public URL buildURL(String method) throws IOException {
         URL url;
         try {
