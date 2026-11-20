@@ -678,10 +678,10 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    /** From Android 17 a server on the local network or a VPN can't be reached without a runtime permission: a
-     *  connection there just times out. A server url only takes effect on a start, so this is the first we connect
-     *  to one just saved. Ask, and wait for the answer before connecting. Off the main thread, as telling whether a
-     *  server name is on the local network takes a lookup. */
+    /** From Android 17 a server on the local network (LocalNetwork.isLocal) can't be reached without a runtime
+     *  permission: a connection there just times out. A server url only takes effect on a start, so this is the first
+     *  we connect to one just saved. Ask, and wait for the answer before connecting. Off the main thread, as telling
+     *  whether a server name is on the local network takes a lookup. */
     private void awaitLocalNetworkPermission() {
         // the server is up already, as when this activity was recreated: nothing left to connect first
         if (Build.VERSION.SDK_INT < LocalNetwork.FIRST_SDK || localAuth != null || hasLocalNetworkPermission())
@@ -698,7 +698,7 @@ public class MainActivity extends AppCompatActivity {
         boolean local;
         try {
             // a slow lookup mustn't hold up the first page: a server it can't place in time isn't asked about
-            local = CompletableFuture.supplyAsync(() -> LocalNetwork.isLocal(host)).get(2, TimeUnit.SECONDS);
+            local = CompletableFuture.supplyAsync(() -> LocalNetwork.isLocal(host, LocalNetwork.ownSubnets())).get(2, TimeUnit.SECONDS);
         } catch (Exception slow) {
             local = false;
         }
