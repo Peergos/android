@@ -228,6 +228,12 @@ public class MainActivity extends AppCompatActivity {
     ContentAddressedStorage localDht;
     CoreNode core;
     ActivityResultLauncher requestPermissions;
+    private ActivityResultLauncher<String[]> localNetworkRequest;
+    /** The answer to the local network permission, which starting the server waits for. Shared by the activities
+     *  of this process, as one may be recreated while the question is on screen. */
+    private static volatile CompletableFuture<Boolean> localNetworkAnswer;
+    private static volatile boolean localNetworkAsking = false;
+    private static volatile boolean localNetworkRefusalShown = false;
     // requested on the http server thread, completed on the ui thread, by whichever activity the picker's answer
     // comes back to: the one that asked may have been recreated meanwhile
     static volatile CompletableFuture<String> chosenHostDir;
@@ -563,6 +569,21 @@ public class MainActivity extends AppCompatActivity {
             System.out.println(m);
             gotPermissions.complete(true);
         });
+        // registered on every create, so an answer given while the activity was recreated still arrives
+        localNetworkRequest = registerForActivityResult(new RequestMultiplePermissions(), result -> {
+            localNetworkAsking = false;
+            Boolean granted = result.get(LocalNetwork.PERMISSION);
+            // no answer: cancelled, as when another permission was being asked for. Asked again on the next resume.
+            if (granted == null)
+                return;
+            CompletableFuture<Boolean> answer = localNetworkAnswer;
+            if (answer != null)
+                answer.complete(granted);
+            if (! granted && ! localNetworkRefusalShown) {
+                localNetworkRefusalShown = true;
+                showLocalNetworkRefused();
+            }
+        });
 
         crypto = Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         ThumbnailGenerator.setInstance(new AndroidImageThumbnailer());
@@ -635,6 +656,7 @@ public class MainActivity extends AppCompatActivity {
 
         webView.setDownloadListener(downloadListener);
         new Thread(() -> {
+            awaitLocalNetworkPermission();
             SyncRunner syncer = startServer(PORT);
             LocalApiAuth auth = localAuth;
             MainActivity.this.runOnUiThread(() -> {
@@ -654,6 +676,82 @@ public class MainActivity extends AppCompatActivity {
             if (syncer != null)
                 ForkJoinPool.commonPool().submit((Runnable) syncer::runNow);
         }).start();
+    }
+
+    /** From Android 17 a server on the local network (LocalNetwork.isLocal) can't be reached without a runtime
+     *  permission: a connection there just times out. A server url only takes effect on a start, so this is the first
+     *  we connect to one just saved. Ask, and wait for the answer before connecting. Off the main thread, as telling
+     *  whether a server name is on the local network takes a lookup. */
+    private void awaitLocalNetworkPermission() {
+        // the server is up already, as when this activity was recreated: nothing left to connect first
+        if (Build.VERSION.SDK_INT < LocalNetwork.FIRST_SDK || localAuth != null || hasLocalNetworkPermission())
+            return;
+        String host = PeergosApp.readSavedServerUrl(Paths.get(getFilesDir().getAbsolutePath())).map(url -> {
+            try {
+                return new URL(url).getHost();
+            } catch (MalformedURLException e) {
+                return null;
+            }
+        }).orElse(null);
+        if (host == null)
+            return;
+        boolean local;
+        try {
+            // a slow lookup mustn't hold up the first page: a server it can't place in time isn't asked about
+            local = CompletableFuture.supplyAsync(() -> LocalNetwork.isLocal(host, LocalNetwork.ownSubnets())).get(2, TimeUnit.SECONDS);
+        } catch (Exception slow) {
+            local = false;
+        }
+        if (! local)
+            return;
+        CompletableFuture<Boolean> answer;
+        synchronized (MainActivity.class) {
+            // asked once a start: a refusal isn't asked about again each time the activity is recreated
+            if (localNetworkAnswer == null)
+                localNetworkAnswer = new CompletableFuture<>();
+            answer = localNetworkAnswer;
+        }
+        if (answer.isDone())
+            return;
+        runOnUiThread(() -> {
+            MainActivity live = current;
+            if (live != null)
+                live.maybeAskForLocalNetwork();
+        });
+        try {
+            // left unanswered, as by leaving the app, the server starts anyway, and is asked about again on return
+            answer.get(2, TimeUnit.MINUTES);
+        } catch (Exception unanswered) {}
+    }
+
+    private boolean hasLocalNetworkPermission() {
+        return ActivityCompat.checkSelfPermission(getApplicationContext(), LocalNetwork.PERMISSION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** Only from an activity on screen, and one question at a time: a second would be cancelled at once. */
+    private void maybeAskForLocalNetwork() {
+        CompletableFuture<Boolean> answer = localNetworkAnswer;
+        if (answer == null || answer.isDone() || localNetworkAsking || ! resumed || isFinishing() || isDestroyed())
+            return;
+        if (hasLocalNetworkPermission()) {
+            answer.complete(true);
+            return;
+        }
+        localNetworkAsking = true;
+        localNetworkRequest.launch(new String[]{LocalNetwork.PERMISSION});
+    }
+
+    /** Without the permission a connection to the server just times out, so say why it can't be reached. Once a
+     *  start, however often the activity is recreated. */
+    private void showLocalNetworkRefused() {
+        new AlertDialog.Builder(this)
+                .setTitle("Peergos may not reach your server")
+                .setMessage("Your server looks to be on your local network or a VPN, and Android only lets Peergos "
+                        + "reach those with the Nearby devices permission. You can allow it in the app's settings.")
+                .setPositiveButton("Open settings", (d, w) -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", getPackageName(), null))))
+                .setNegativeButton("Not now", null)
+                .show();
     }
 
     @Override
@@ -781,6 +879,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void downloadFile(Uri uri) {
+        // only what our own server reflects: the download manager would fetch any other host, in cleartext too
+        if (! isOurs(uri))
+            return;
         new Thread(() -> {
             System.out.println("onDownloadStart");
             String path = uri.getEncodedPath();
@@ -1125,6 +1226,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         resumed = true;
         current = this;
+        maybeAskForLocalNetwork();
         SyncPermission.CALENDAR.setAsker(calendarPermissionAsker);
         SyncPermission.CONTACTS.setAsker(contactsPermissionAsker);
         // a folder removed while the app is on screen never reaches start(), so let the count
@@ -1167,6 +1269,9 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         if (current == this)
             current = null;
+        // a question this activity left on screen is answered to no one once it is gone for good, so ask again
+        if (isFinishing() && localNetworkAsking)
+            localNetworkAsking = false;
         super.onDestroy();
     }
 
@@ -1664,7 +1769,7 @@ public class MainActivity extends AppCompatActivity {
                 return null;
 
             // now start the server
-            HttpPoster poster = new AndroidPoster(target, true, Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
+            HttpPoster poster = new AndroidPoster(target, AndroidPoster.isPublicServer(target), Optional.empty(), Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android"));
             ContentAddressedStorage remote = NetworkAccess.buildLocalDht(poster, true, hasher);
             // Its ids and block store properties come from disk after the first run: nothing
             // waits on the server before the page can load, and the page still loads, and a

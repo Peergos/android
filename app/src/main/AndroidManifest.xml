@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- from Android 17, to reach a self-hosted server on the local network or a VPN (LocalNetwork) -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK"/>
     <!-- webview reports navigator.onLine as always true without this, so the ui
          cannot tell that a pass was answered from cache rather than the server -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>

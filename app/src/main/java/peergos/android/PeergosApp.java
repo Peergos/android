@@ -82,7 +82,7 @@ public class PeergosApp extends Application {
 
         Supplier<Crypto> cryptoFactory = () -> Main.initCrypto(new ScryptAndroid(), new BcMldsa());
         Supplier<NetworkAccess> networkFactory = () -> {
-            HttpPoster poster = new AndroidPoster(serverUrl, true, Optional.empty(),
+            HttpPoster poster = new AndroidPoster(serverUrl, AndroidPoster.isPublicServer(serverUrl), Optional.empty(),
                     Optional.of("Peergos-" + UserService.CURRENT_VERSION + "-android-mount"));
             Crypto c = cryptoFactory.get();
             ContentAddressedStorage localDht = NetworkAccess.buildLocalDht(poster, true, c.hasher);
