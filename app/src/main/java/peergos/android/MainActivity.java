@@ -192,7 +192,8 @@ public class MainActivity extends AppCompatActivity {
     private static FileBlockCache blockCache;
 
     /** One per process, for the local server and every sync pass: each instance keeps its own count of the cache's
-     *  size and evicts by it, so a second one over the same directory deletes again what the first already did. */
+     *  size and evicts by it, so a second one over the same directory deletes again what the first already did. Every
+     *  caller passes the app's own folder, so the first call's is the one used. */
     public static synchronized FileBlockCache blockCache(Path peergosDir) {
         if (blockCache == null)
             blockCache = new FileBlockCache(peergosDir.resolve(Paths.get("blocks", "cache")), MAX_BLOCK_CACHE_SIZE);
