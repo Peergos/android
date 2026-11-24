@@ -91,7 +91,6 @@ dependencies {
     implementation(files("libs/Peergos.jar"))
     // ML-DSA for writer keys, which Android's providers lack. prepare-jar.sh strips the older copy in Peergos.jar
     implementation("org.bouncycastle:bcprov-jdk18on:1.86")
-    implementation(libs.exifinterface)
     implementation("androidx.lifecycle:lifecycle-process:$lifecycle_version")
     implementation("androidx.work:work-runtime:$work_version")
     implementation("androidx.core:core-ktx:1.16.0")
@@ -107,6 +106,8 @@ dependencies {
     androidTestImplementation(libs.espresso.core)
     // GrantPermissionRule: the calendar provider refuses a process without the runtime grant
     androidTestImplementation(libs.test.rules)
+    // the thumbnail tests write the orientation tags of their photos
+    androidTestImplementation(libs.exifinterface)
 }
 // ---------------------------------------------------------------------------
 // libs/Peergos.jar is built from the web-ui submodule rather than checked in.
