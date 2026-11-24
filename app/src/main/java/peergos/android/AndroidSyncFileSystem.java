@@ -3,7 +3,7 @@ package peergos.android;
 import android.content.Context;
 import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
+import android.graphics.ImageDecoder;
 import android.media.MediaMetadataRetriever;
 import android.media.ThumbnailUtils;
 import android.net.Uri;
@@ -589,17 +589,24 @@ public class AndroidSyncFileSystem extends StagedFileSystem {
         return type != null ? type : ANY_TYPE;
     }
 
-    private Bitmap generateImageThumbnail(Uri uri) throws IOException {
-        try (InputStream in = context.getContentResolver().openInputStream(uri)) {
-            if (in == null)
-                return null;
-
-            Bitmap full = BitmapFactory.decodeStream(in);
-            if (full == null)
-                return null;
-
-            return ThumbnailUtils.extractThumbnail(full, 400, 400);
+    private Bitmap generateImageThumbnail(Uri uri) {
+        Bitmap full;
+        try {
+            // ImageDecoder turns an image the way its exif orientation says it is shown; BitmapFactory left it as stored
+            full = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.getContentResolver(), uri), (decoder, info, source) -> {
+                decoder.setAllocator(ImageDecoder.ALLOCATOR_SOFTWARE);
+                // no more than the thumbnail needs, as a turned image is decoded whole and then turned; a short side
+                // of at least 445 keeps extractThumbnail scaling it, as it crops rather than scales one of 400 to 444
+                decoder.setTargetSampleSize(Math.max(1, Math.min(info.getSize().getWidth(), info.getSize().getHeight()) / 445));
+                // a file still being written gets what there is of it, as BitmapFactory gave it
+                decoder.setOnPartialImageListener(e -> e.getError() == ImageDecoder.DecodeException.SOURCE_INCOMPLETE);
+            });
+        } catch (IOException | IllegalStateException | OutOfMemoryError undecodable) {
+            // as BitmapFactory returned null: hwui won't make a bitmap over 2 GB, whatever memory there is, and
+            // says so with an IllegalStateException, or with an OutOfMemoryError when an allocation fails
+            return null;
         }
+        return ThumbnailUtils.extractThumbnail(full, 400, 400);
     }
 
     private Bitmap generateVideoThumbnail(Uri uri) {
